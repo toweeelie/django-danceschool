@@ -4,7 +4,7 @@ from django.utils.translation import ugettext_lazy as _
 from cms.models.pluginmodel import CMSPlugin
 
 from djangocms_text_ckeditor.fields import HTMLField
-
+from parler.models import TranslatableModel, TranslatedFields
 
 class FAQCategory(models.Model):
 
@@ -22,12 +22,17 @@ class FAQCategory(models.Model):
         verbose_name_plural = _('FAQ categories')
 
 
-class FAQ(models.Model):
+class FAQ(TranslatableModel):
 
     category = models.ForeignKey(FAQCategory,null=True,verbose_name=_('Category'))
 
     question = models.CharField(_('Question'),max_length=200)
     answer = HTMLField(_('Answer'),help_text=_('Answer the question.'))
+    
+    translations = TranslatedFields(
+        question_t = models.CharField(_('Question'),max_length=200),
+        answer_t = HTMLField(_('Answer'),help_text=_('Answer the question.')),
+    )
 
     # This defines the order number on the FAQ page
     orderNum = models.PositiveIntegerField(_('Order number'),help_text=_('This number specifies the order in which the questions will be shown on the FAQ page.'), default=0)

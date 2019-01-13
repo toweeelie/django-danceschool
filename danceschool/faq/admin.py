@@ -5,13 +5,13 @@ from adminsortable2.admin import SortableAdminMixin
 from cms.admin.placeholderadmin import FrontendEditableAdminMixin
 
 from .models import FAQCategory, FAQ
-
+from parler.admin import TranslatableAdmin
 
 class FAQCategoryAdmin(SortableAdminMixin, admin.ModelAdmin):
     list_display = ('name',)
 
 
-class FAQAdmin(SortableAdminMixin, FrontendEditableAdminMixin, admin.ModelAdmin):
+class FAQAdmin(SortableAdminMixin, FrontendEditableAdminMixin, TranslatableAdmin):
     list_display = ('question','category','draft')
     list_filter = ('category','draft')
     list_editable = ('category',)
