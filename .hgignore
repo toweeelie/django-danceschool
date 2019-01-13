@@ -298,3 +298,5 @@ reportlab-3.5.5.dist-info/
 *.pth
 reportlab-3.5.6.dist-info/
 stripe-2.5.0.dist-info/
+*.dist-info/*
+soupsieve/
