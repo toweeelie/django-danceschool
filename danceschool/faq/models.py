@@ -25,13 +25,10 @@ class FAQCategory(models.Model):
 class FAQ(TranslatableModel):
 
     category = models.ForeignKey(FAQCategory,null=True,verbose_name=_('Category'))
-
-    question = models.CharField(_('Question'),max_length=200)
-    answer = HTMLField(_('Answer'),help_text=_('Answer the question.'))
     
     translations = TranslatedFields(
-        question_t = models.CharField(_('Question'),max_length=200),
-        answer_t = HTMLField(_('Answer'),help_text=_('Answer the question.')),
+        question = models.CharField(_('Question'),max_length=200),
+        answer = HTMLField(_('Answer'),help_text=_('Answer the question.')),
     )
 
     # This defines the order number on the FAQ page
