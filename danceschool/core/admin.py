@@ -17,7 +17,7 @@ from dal import autocomplete
 from .models import EventSession, Event, PublicEventCategory, Series, SeriesCategory, PublicEvent, EventOccurrence, SeriesTeacher, StaffMember, Instructor, SubstituteTeacher, Registration, TemporaryRegistration, EventRegistration, TemporaryEventRegistration, ClassDescription, CustomerGroup, Customer, Location, PricingTier, DanceRole, DanceType, DanceTypeLevel, EmailTemplate, EventStaffMember, SeriesStaffMember, EventStaffCategory, EventRole, Invoice, InvoiceItem, Room
 from .constants import getConstant
 from .forms import LocationWithDataWidget
-
+from parler.admin import TranslatableAdmin
 
 ######################################
 # Admin action for repeating events
@@ -717,7 +717,7 @@ class InstructorInline(admin.StackedInline):
 
 
 @admin.register(StaffMember)
-class StaffMemberAdmin(FrontendEditableAdminMixin, admin.ModelAdmin):
+class StaffMemberAdmin(FrontendEditableAdminMixin, TranslatableAdmin):
     list_display = ('fullName','privateEmail','categories_list','instructor_status','instructor_availableForPrivates')
     list_display_links = ('fullName',)
     list_editable = ('privateEmail',)

@@ -34,7 +34,7 @@ from .signals import post_registration
 from .mixins import EmailRecipientMixin
 from .utils.emails import get_text_for_html
 from .utils.timezone import ensure_localtime
-
+from parler.models import TranslatableModel, TranslatedFields
 
 # Define logger for this file
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ class EventStaffCategory(models.Model):
         verbose_name_plural = _('Event staff categories')
 
 
-class StaffMember(models.Model):
+class StaffMember(TranslatableModel):
     '''
     StaffMembers include instructors and anyone else who you may wish to
     associate with specific events or activities.
@@ -170,6 +170,12 @@ class StaffMember(models.Model):
 
     image = FilerImageField(verbose_name=_('Staff photo'),blank=True,null=True,related_name='staff_image')
     bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True)
+    
+    translations = TranslatedFields(
+        _firstName = models.CharField(_('First name'),max_length=50,null=True,blank=True),
+        _lastName = models.CharField(_('Last name'),max_length=50,null=True,blank=True),
+        _bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True),
+    )
 
     categories = models.ManyToManyField(
         EventStaffCategory,verbose_name=_('Included in staff categories'),blank=True,
