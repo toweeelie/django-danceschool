@@ -15,7 +15,9 @@ def forwards_func(apps, schema_editor):
         MyModelTranslation.objects.create(
             master_id=object.pk,
             language_code=settings.LANGUAGE_CODE,
-            # name=object.name
+            firstName=object.firstName,
+            lastName=object.lastName,
+            bio=object.bio,
         )
 
 def backwards_func(apps, schema_editor):
@@ -49,4 +51,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(forwards_func, backwards_func),
     ]
