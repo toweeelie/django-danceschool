@@ -155,8 +155,9 @@ class StaffMember(TranslatableModel):
 
     # These fields are separate from the user fields because sometimes
     # individuals go publicly by a different name than they may privately.
-    firstName = models.CharField(_('First name'),max_length=50,null=True,blank=True)
-    lastName = models.CharField(_('Last name'),max_length=50,null=True,blank=True)
+    #moved to TranslatedFields
+    #firstName = models.CharField(_('First name'),max_length=50,null=True,blank=True)
+    #lastName = models.CharField(_('Last name'),max_length=50,null=True,blank=True)
 
     # Although Staff members may be defined without user accounts, this precludes
     # them from having access to the school's features, and is not recommended.
@@ -169,12 +170,13 @@ class StaffMember(TranslatableModel):
     phone = models.CharField(_('Telephone'),max_length=25,help_text=_('Instructor phone numbers are for the instructor directory only, and should not be given to students.'),blank=True,null=True)
 
     image = FilerImageField(verbose_name=_('Staff photo'),blank=True,null=True,related_name='staff_image')
-    bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True)
+    #bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True)
     
     translations = TranslatedFields(
-        _firstName = models.CharField(_('First name'),max_length=50,null=True,blank=True),
-        _lastName = models.CharField(_('Last name'),max_length=50,null=True,blank=True),
-        _bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True),
+        firstName = models.CharField(_('First name'),max_length=50,null=True,blank=True),
+        lastName = models.CharField(_('Last name'),max_length=50,null=True,blank=True),
+        bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True),
+        meta = {'unique_together': [('language_code', 'firstName'),('language_code', 'lastName')]},
     )
 
     categories = models.ManyToManyField(
@@ -206,10 +208,10 @@ class StaffMember(TranslatableModel):
 
     class Meta:
         ''' Prevents accidentally adding multiple staff members with the same name. '''
-        unique_together = ('firstName', 'lastName')
+        #unique_together = ('firstName', 'lastName')
         verbose_name = _('Staff member')
         verbose_name_plural = _('Staff members')
-        ordering = ('lastName','firstName')
+        ordering = ('translations__lastName','translations__firstName')
 
         permissions = (
             ('view_staff_directory',_('Can access the staff directory view')),
