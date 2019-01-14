@@ -1,0 +1,151 @@
+# Copyright (C) 2018
+# This file is distributed under the same license as the Django Danceschool package.
+# Ricardo Lima <ricardo.lima@catscorner.ca>, 2018.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2018-12-09 22:04-0500\n"
+"PO-Revision-Date: 2019-01-13 18:16+0200\n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n"
+"%10<=4 && (n%100<12 || n%100>14) ? 1 : 2);\n"
+"X-Generator: Poedit 2.2\n"
+"Last-Translator: \n"
+"Language: ru\n"
+
+#: admin.py:27
+#, fuzzy
+msgid "Publish selected FAQs"
+msgstr "Публикация выбранных часто заДаваемых вопросов"
+
+#: admin.py:36
+#, fuzzy
+msgid "Unpublish selected FAQs"
+msgstr "Отмена публикации выбранных часто заДаваемых вопросов"
+
+#: apps.py:7 cms_plugins.py:15 cms_plugins.py:23 cms_plugins.py:39
+#: cms_plugins.py:55 models.py:45
+msgid "FAQs"
+msgstr "FAQs"
+
+#: cms_plugins.py:12
+#, fuzzy
+msgid "FAQ Table of Contents (auto-generated from FAQs on page)"
+msgstr ""
+"ЧАСТО заДАВАЕМЫЕ вопросы оглавление (автоматически генерируется из часто "
+"заДаваемых вопросов на странице)"
+
+#: cms_plugins.py:20
+#, fuzzy
+msgid "List of All FAQs"
+msgstr "Список всех часто заДаваемых вопросов"
+
+#: cms_plugins.py:36
+#, fuzzy
+msgid "List of FAQs by Category"
+msgstr "Список часто заДаваемых вопросов по категориям"
+
+#: cms_plugins.py:52
+#, fuzzy
+msgid "Individual FAQ Item"
+msgstr "Индивидуальный FAQ пункт"
+
+#: cms_toolbars.py:14
+msgid "Content"
+msgstr "Содержимое"
+
+#: cms_toolbars.py:15
+#, fuzzy
+msgid "Manage FAQs"
+msgstr "Управление часто заДаваемыми вопросами"
+
+#: models.py:11
+msgid "Name"
+msgstr "Имя"
+
+#: models.py:14 models.py:33
+msgid "Order number"
+msgstr "Номер заказа"
+
+#: models.py:14
+#, fuzzy
+msgid "This number specifies the order in which categories will be shown."
+msgstr "Это число определяет порядок, в котором будут отображаться категории."
+
+#: models.py:17
+msgid "FAQ Category"
+msgstr "Рубрика ЧаВо"
+
+#: models.py:21
+msgid "FAQ category"
+msgstr "Категории FAQ"
+
+#: models.py:22
+msgid "FAQ categories"
+msgstr "Категории FAQ"
+
+#: models.py:27 models.py:50
+msgid "Category"
+msgstr "Категория"
+
+#: models.py:29 models.py:58
+msgid "Question"
+msgstr "Вопрос"
+
+#: models.py:30
+msgid "Answer"
+msgstr "Ответ"
+
+#: models.py:30
+#, fuzzy
+msgid "Answer the question."
+msgstr "Ответьте на вопрос."
+
+#: models.py:33
+#, fuzzy
+msgid ""
+"This number specifies the order in which the questions will be shown on the "
+"FAQ page."
+msgstr ""
+"Это число определяет порядок, в котором вопросы будут отображаться на "
+"странице FAQ."
+
+#: models.py:35
+#, fuzzy
+msgid "Draft status"
+msgstr "Статус проекта"
+
+#: models.py:35
+#, fuzzy
+msgid "Check this box to prevent publication."
+msgstr "Установите этот флажок, чтобы запретить публикацию."
+
+#: models.py:37
+msgid "Creation date"
+msgstr "Дата создания"
+
+#: models.py:38
+msgid "Last modified date"
+msgstr "Дата последнего изменения"
+
+#: models.py:41 models.py:44
+msgid "FAQ"
+msgstr "FAQ"
+
+#: models.py:51
+msgid "Show Category Title"
+msgstr "Показать название категории"
+
+#: templates/faq/FAQ_TOC.html:4
+msgid "Table of Contents"
+msgstr "Таблица с содержимым"
+
+#: templates/faq/FAQs.html:4
+#, fuzzy
+msgid "Add/Edit FAQs"
+msgstr "Добавление и редактирование часто заДаваемых вопросов"

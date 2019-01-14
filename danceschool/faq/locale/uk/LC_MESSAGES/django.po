@@ -1,0 +1,135 @@
+# Copyright (C) 2018
+# This file is distributed under the same license as the Django Danceschool package.
+# Ricardo Lima <ricardo.lima@catscorner.ca>, 2018.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2018-12-09 22:04-0500\n"
+"PO-Revision-Date: 2019-01-13 17:12+0200\n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n"
+"%10<=4 && (n%100<12 || n%100>14) ? 1 : 2);\n"
+"X-Generator: Poedit 2.2\n"
+"Last-Translator: \n"
+"Language: uk\n"
+
+#: admin.py:27
+msgid "Publish selected FAQs"
+msgstr "Публікувати вибрані поширені запитання"
+
+#: admin.py:36
+msgid "Unpublish selected FAQs"
+msgstr "Скасувати публікацію вибраних поширених запитань"
+
+#: apps.py:7 cms_plugins.py:15 cms_plugins.py:23 cms_plugins.py:39
+#: cms_plugins.py:55 models.py:45
+msgid "FAQs"
+msgstr "Чапи"
+
+#: cms_plugins.py:12
+msgid "FAQ Table of Contents (auto-generated from FAQs on page)"
+msgstr "Зміст (автоматично згенерований з поширених запитань на сторінці)"
+
+#: cms_plugins.py:20
+msgid "List of All FAQs"
+msgstr "Список усіх поширених запитань"
+
+#: cms_plugins.py:36
+msgid "List of FAQs by Category"
+msgstr "Список поширених запитань за категоріями"
+
+#: cms_plugins.py:52
+msgid "Individual FAQ Item"
+msgstr "Окремий елемент FAQ"
+
+#: cms_toolbars.py:14
+msgid "Content"
+msgstr "Контент"
+
+#: cms_toolbars.py:15
+msgid "Manage FAQs"
+msgstr "Керувати FAQs"
+
+#: models.py:11
+msgid "Name"
+msgstr "Ім'я"
+
+#: models.py:14 models.py:33
+msgid "Order number"
+msgstr "Номер замовлення"
+
+#: models.py:14
+msgid "This number specifies the order in which categories will be shown."
+msgstr "Це число визначає порядок, в якому категорії будуть показані."
+
+#: models.py:17
+msgid "FAQ Category"
+msgstr "FAQ Категорія"
+
+#: models.py:21
+msgid "FAQ category"
+msgstr "FAQ категорія"
+
+#: models.py:22
+msgid "FAQ categories"
+msgstr "FAQ категорії"
+
+#: models.py:27 models.py:50
+msgid "Category"
+msgstr "Категорія"
+
+#: models.py:29 models.py:58
+msgid "Question"
+msgstr "Питання"
+
+#: models.py:30
+msgid "Answer"
+msgstr "Відповідь"
+
+#: models.py:30
+msgid "Answer the question."
+msgstr "Відповідайте на запитання."
+
+#: models.py:33
+msgid ""
+"This number specifies the order in which the questions will be shown on the "
+"FAQ page."
+msgstr ""
+"Це число визначає порядок, в якому питання будуть показані на сторінці FAQ."
+
+#: models.py:35
+msgid "Draft status"
+msgstr "Ескізний статус"
+
+#: models.py:35
+msgid "Check this box to prevent publication."
+msgstr "Установіть цей прапорець, щоб заборонити публікацію."
+
+#: models.py:37
+msgid "Creation date"
+msgstr "Дата створення"
+
+#: models.py:38
+msgid "Last modified date"
+msgstr "Дата останнього змінення"
+
+#: models.py:41 models.py:44
+msgid "FAQ"
+msgstr "ЧЗП"
+
+#: models.py:51
+msgid "Show Category Title"
+msgstr "Показати заголовок категорії"
+
+#: templates/faq/FAQ_TOC.html:4
+msgid "Table of Contents"
+msgstr "Зміст"
+
+#: templates/faq/FAQs.html:4
+msgid "Add/Edit FAQs"
+msgstr "Додати або редагувати ЧЗП"
