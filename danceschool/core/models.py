@@ -176,7 +176,7 @@ class StaffMember(TranslatableModel):
         firstName = models.CharField(_('First name'),max_length=50,null=True,blank=True),
         lastName = models.CharField(_('Last name'),max_length=50,null=True,blank=True),
         bio = HTMLField(verbose_name=_('Bio text'),help_text=_('Insert the instructor\'s bio here.  Use HTML to include videos, formatting, etc.'),null=True,blank=True),
-        meta = {'unique_together': [('language_code', 'firstName'),('language_code', 'lastName')]},
+        meta = {'unique_together': [('language_code', 'firstName', 'lastName'),]},
     )
 
     categories = models.ManyToManyField(
