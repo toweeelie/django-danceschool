@@ -211,7 +211,8 @@ class StaffMember(TranslatableModel):
         #unique_together = ('firstName', 'lastName')
         verbose_name = _('Staff member')
         verbose_name_plural = _('Staff members')
-        ordering = ('translations__lastName','translations__firstName')
+        #ordering = ('translations__lastName','translations__firstName')
+        ordering = ('id',)
 
         permissions = (
             ('view_staff_directory',_('Can access the staff directory view')),
