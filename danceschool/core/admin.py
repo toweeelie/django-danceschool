@@ -723,7 +723,8 @@ class StaffMemberAdmin(FrontendEditableAdminMixin, TranslatableAdmin):
     list_editable = ('privateEmail',)
     list_filter = ('categories','instructor__status','instructor__availableForPrivates')
     search_fields = ('=firstName','=lastName','publicEmail','privateEmail')
-    ordering = ('translations__lastName','translations__firstName')
+    #ordering = ('translations__lastName','translations__firstName')
+    ordering = ('id',)
     inlines = [InstructorInline,]
 
     # Allows overriding from other apps
