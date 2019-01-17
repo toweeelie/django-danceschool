@@ -22,7 +22,7 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
     def render(self, context, instance, placeholder):
         context = super(StaffMemberListPlugin,self).render(context,instance,placeholder)
 
-        listing = StaffMember.objects.all()
+        listing = StaffMember.objects.all().translated('en').distinct()
 
         if instance.statusChoices:
             listing = listing.filter(instructor__status__in=instance.statusChoices)
@@ -36,19 +36,19 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
         if instance.photoRequired:
             listing = listing.filter(image__isnull=False)
         if instance.bioRequired:
-            listing = listing.filter(bio__isnull=False).exclude(bio__exact='')
+            listing = listing.filter(translations__bio__isnull=False).exclude(translations__bio__exact='')
 
         if instance.activeUpcomingOnly:
             listing = listing.filter(eventstaffmember__event__endTime__gte=timezone.now()).distinct()
 
         if instance.orderChoice == 'firstName':
-            listing = listing.order_by('firstName','lastName')
+            listing = listing.order_by('translations__firstName','translations__lastName')
         elif instance.orderChoice == 'status':
-            listing = listing.order_by('status','lastName','firstName')
+            listing = listing.order_by('status','translations__lastName','translations__firstName')
         elif instance.orderChoice == 'random':
             listing = listing.order_by('?')
         else:
-            listing = listing.order_by('lastName','firstName')
+            listing = listing.order_by('translations__lastName','translations__firstName')
 
         context.update({
             'list_title': instance.title,
