@@ -775,9 +775,9 @@ class OtherInstructorStatsView(InstructorStatsView):
     def get_object(self, queryset=None):
         if 'first_name' in self.kwargs and 'last_name' in self.kwargs:
             return get_object_or_404(
-                StaffMember.objects.filter(
-                    **{'firstName': unquote_plus(self.kwargs['first_name']).replace('_', ' '),
-                        'lastName': unquote_plus(self.kwargs['last_name']).replace('_', ' ')})
+                StaffMember.objects.translated('en').distinct().filter(
+                    **{'translations__firstName': unquote_plus(self.kwargs['first_name']).replace('_', ' '),
+                        'translations__lastName': unquote_plus(self.kwargs['last_name']).replace('_', ' ')})
                     )
         else:
             return None

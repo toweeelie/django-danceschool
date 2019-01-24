@@ -1291,7 +1291,8 @@ class EventStaffMember(models.Model):
         return '%(type)s: %(name)s %(as)s %(category)s %(for)s %(eventName)s' % replacements
 
     class Meta:
-        ordering = ('event', 'staffMember__lastName', 'staffMember__firstName')
+        #ordering = ('event', 'staffMember__translations__lastName', 'staffMember__translations__firstName')
+        ordering = ('event', 'staffMember__id')
         unique_together = ('staffMember','event','category','replacedStaffMember')
         verbose_name = _('Event staff member')
         verbose_name_plural = _('Event staff members')

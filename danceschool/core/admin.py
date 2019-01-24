@@ -48,7 +48,7 @@ class EventRoleInline(admin.TabularInline):
 class EventStaffMemberInlineForm(ModelForm):
 
     staffMember = ModelChoiceField(
-        queryset=StaffMember.objects.all(),
+        queryset=StaffMember.objects.all().translated('en').distinct(),
         widget=autocomplete.ModelSelect2(
             url='autocompleteStaffMember',
             attrs={
@@ -75,15 +75,15 @@ class SeriesTeacherInlineForm(ModelForm):
         # Impose restrictions on new records, but not on existing ones.
         if not kwargs.get('instance',None):
             # Filter out retired teachers
-            self.fields['staffMember'].queryset = StaffMember.objects.filter(
+            self.fields['staffMember'].queryset = StaffMember.objects.translated('en').distinct().filter(
                 instructor__isnull=False,
             ).exclude(
                 instructor__status__in=[Instructor.InstructorStatus.retired,Instructor.InstructorStatus.hidden,Instructor.InstructorStatus.retiredGuest]
             )
         else:
-            self.fields['staffMember'].queryset = StaffMember.objects.all()
+            self.fields['staffMember'].queryset = StaffMember.objects.all().translated('en').distinct()
 
-        self.fields['staffMember'].queryset = self.fields['staffMember'].queryset.order_by('instructor__status','firstName','lastName')
+        self.fields['staffMember'].queryset = self.fields['staffMember'].queryset.order_by('instructor__status','translations__firstName','translations__lastName')
 
     class Meta:
         widgets = {
@@ -116,11 +116,11 @@ class SubstituteTeacherInlineForm(ModelForm):
         # Impose restrictions on new records, but not on existing ones.
         if not kwargs.get('instance',None):
             # Filter out retired teachers
-            self.fields['staffMember'].queryset = StaffMember.objects.exclude(instructor__status__in=[Instructor.InstructorStatus.retired,Instructor.InstructorStatus.hidden])
+            self.fields['staffMember'].queryset = StaffMember.objects.translated('en').distinct().exclude(instructor__status__in=[Instructor.InstructorStatus.retired,Instructor.InstructorStatus.hidden])
         else:
-            self.fields['staffMember'].queryset = StaffMember.objects.all()
+            self.fields['staffMember'].queryset = StaffMember.objects.all().translated('en').distinct()
 
-        self.fields['staffMember'].queryset = self.fields['staffMember'].queryset.order_by('instructor__status','firstName','lastName')
+        self.fields['staffMember'].queryset = self.fields['staffMember'].queryset.order_by('instructor__status','translations__firstName','translations__lastName')
 
     class Meta:
         widgets = {
