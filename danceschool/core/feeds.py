@@ -32,6 +32,14 @@ class EventFeedItem(object):
         self.id_number = object.event.id
         self.title = object.event.name
         self.description = object.event.shortDescription
+        
+        self.instructors = ''
+        try:
+            for t in object.event.teachers:
+                self.instructors += t.fullName+'\n'
+        except:
+            pass
+            
         self.start = timezone.localtime(object.startTime,timeZone) \
             if timezone.is_aware(object.startTime) else object.startTime
         self.end = timezone.localtime(object.endTime,timeZone) \
