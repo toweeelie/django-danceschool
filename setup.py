@@ -42,6 +42,7 @@ setup(
         'django-multiselectfield>=0.1.5',
         'django-polymorphic>=1.0.2',
         'django-sekizai>=0.10.0',
+        'django-parler>=1.9.2',
         'djangocms-admin-style>=1.2.6.2',
         'djangocms-bootstrap4>=1.1.1',
         'djangocms-forms>=0.2.5',
