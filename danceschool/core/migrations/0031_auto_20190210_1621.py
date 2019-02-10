@@ -15,7 +15,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='instructor',
             name='order',
-            field=models.FloatField(default=0, help_text='This is used to apply manual order for Instructors list.', verbose_name='Order number'),
+            field=models.FloatField(default=10, help_text='This is used to apply manual order for Instructors list.', verbose_name='Order number'),
         ),
         migrations.AlterField(
             model_name='staffmemberlistpluginmodel',
