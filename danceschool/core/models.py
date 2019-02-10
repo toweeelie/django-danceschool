@@ -238,7 +238,9 @@ class Instructor(models.Model):
 
     status = models.CharField(_('Instructor status'),max_length=1,choices=InstructorStatus.choices,default=InstructorStatus.hidden,help_text=_('Instructor status affects the visibility of the instructor on the site, but is separate from the "categories" of event staffing on which compensation is based.'))
     availableForPrivates = models.BooleanField(_('Available for private lessons'),default=True,help_text=_('Check this box if you would like to be listed as available for private lessons from students.'))
-
+    
+    order = models.FloatField(_('Order number'),help_text=_('This is used to apply manual order for Instructors list.'),default=10)
+    
     @property
     def assistant(self):
         return self.status == self.InstructorStatus.assistant
@@ -3091,6 +3093,7 @@ class StaffMemberListPluginModel(CMSPlugin):
         firstName = ChoiceItem('firstName',_('First Name'))
         lastName = ChoiceItem('lastName',_('Last Name'))
         status = ChoiceItem('status',_('Instructor Status'))
+        manual = ChoiceItem('manual',_('Manual Order'))
         random = ChoiceItem('random',_('Randomly Ordered'))
 
     statusChoices = MultiSelectField(

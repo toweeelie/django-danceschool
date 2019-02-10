@@ -45,6 +45,8 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
             listing = listing.order_by('translations__firstName','translations__lastName')
         elif instance.orderChoice == 'status':
             listing = listing.order_by('instructor__status','translations__firstName','translations__lastName')
+        elif instance.orderChoice == 'manual':
+            listing = listing.order_by('instructor__order','instructor__status','translations__firstName','translations__lastName')
         elif instance.orderChoice == 'random':
             listing = listing.order_by('?')
         else:
