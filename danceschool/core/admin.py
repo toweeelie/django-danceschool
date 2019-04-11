@@ -482,6 +482,9 @@ class CustomerAdmin(admin.ModelAdmin):
         (None, {
             'fields': (('first_name','last_name'),'email','phone','user',)
         }),
+        (_('Subscription'), {
+            'fields': (('sheet_id','customer_id',),)
+        }),
         (_('Groups'), {
             'fields': ('groups',)
         }),

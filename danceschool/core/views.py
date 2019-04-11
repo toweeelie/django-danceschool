@@ -664,12 +664,58 @@ class SendEmailView(PermissionRequiredMixin, UserFormKwargsMixin, FormView):
 
 ############################################
 # Customer and Instructor Stats Views
-
+import pickle, os
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 
 class AccountProfileView(LoginRequiredMixin, DetailView):
     model = User
     template_name = 'core/account_profile.html'
 
+    def get_subscription(self, s_id, c_id):
+        # If modifying these scopes, delete the file token.pickle.
+        SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+        
+        info_ranges = ['B1:Z1','B{id}:Z{id}'.format(id = c_id)]
+
+        creds = None
+        # The file token.pickle stores the user's access and refresh tokens, and is
+        # created automatically when the authorization flow completes for the first
+        # time.
+        # print(os.getcwd())
+        if os.path.exists('token.pickle'):
+            with open('token.pickle', 'rb') as token:
+                creds = pickle.load(token)
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json', SCOPES)
+                creds = flow.run_local_server()
+            # Save the credentials for the next run
+            with open('token.pickle', 'wb') as token:
+                pickle.dump(creds, token)
+
+        service = build('sheets', 'v4', credentials=creds)
+
+        # Call the Sheets API
+        info = service.spreadsheets().values().batchGet(spreadsheetId=s_id,ranges=info_ranges).execute()
+
+        header = info['valueRanges'][0]
+        client = info['valueRanges'][1]
+
+        client_info = ['%s : %s\n' % (_('Period'),header['range'].split('!')[0])]
+        for i,v in enumerate(header['values'][0]):
+            try:
+                client_info.append('%s : %s' % (v, client['values'][0][i]))
+            except IndexError:
+                pass
+                
+        return client_info
+    
     def get_object(self, queryset=None):
         return self.request.user
 
@@ -689,6 +735,10 @@ class AccountProfileView(LoginRequiredMixin, DetailView):
                 'customer_verified': user.emailaddress_set.filter(email=user.customer.email, verified=True).exists(),
             })
             context['customer_eventregs'] = EventRegistration.objects.filter(registration__customer=user.customer)
+            if user.customer.customer_id > 1:
+                context.update({
+                    'subscription': self.get_subscription(user.customer.sheet_id,user.customer.customer_id),
+                })
 
         context['verified_eventregs'] = EventRegistration.objects.filter(
             registration__customer__email__in=[x.email for x in context['verified_emails']]
