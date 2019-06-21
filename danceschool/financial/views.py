@@ -1,11 +1,13 @@
 from django.views.generic import DetailView, TemplateView, CreateView, View, FormView
 from django.shortcuts import get_object_or_404
-from django.http import HttpResponse, Http404, HttpResponseBadRequest
+from django.http import HttpResponse, Http404, HttpResponseBadRequest, HttpResponseRedirect
 from django.db.models import Q, Sum, F, Min
+from django.contrib import messages
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
-from django.utils.translation import ugettext_lazy as _
+from django.urls import reverse
+from django.utils.translation import ugettext_lazy as _, ugettext
 from django.utils import timezone
 from django.contrib.messages.views import SuccessMessageMixin
 from django.forms.models import model_to_dict
@@ -15,6 +17,7 @@ import unicodecsv as csv
 from calendar import month_name
 from urllib.parse import unquote_plus
 from braces.views import PermissionRequiredMixin, StaffuserRequiredMixin, UserFormKwargsMixin
+from collections import OrderedDict
 
 from danceschool.core.models import Instructor, Location, Event, StaffMember, EventStaffCategory
 from danceschool.core.constants import getConstant
@@ -23,8 +26,15 @@ from danceschool.core.utils.timezone import ensure_timezone
 from danceschool.core.utils.requests import getIntFromGet, getDateTimeFromGet
 
 from .models import ExpenseItem, RevenueItem, ExpenseCategory, RevenueCategory, RepeatedExpenseRule, StaffMemberWageInfo
-from .helpers import prepareFinancialStatement, getExpenseItemsCSV, getRevenueItemsCSV, prepareStatementByMonth, prepareStatementByEvent
-from .forms import ExpenseReportingForm, RevenueReportingForm, CompensationRuleUpdateForm, CompensationRuleResetForm
+from .helpers import (
+    prepareFinancialStatement, getExpenseItemsCSV, getRevenueItemsCSV, prepareStatementByPeriod,
+    prepareStatementByEvent, createExpenseItemsForEvents, createExpenseItemsForVenueRental, createGenericExpenseItems,
+    createRevenueItemsForRegistrations
+)
+from .forms import (
+    ExpenseReportingForm, RevenueReportingForm, CompensationRuleUpdateForm,
+    CompensationRuleResetForm, ExpenseRuleGenerationForm
+)
 from .constants import EXPENSE_BASES
 
 
@@ -218,17 +228,17 @@ class FinancesByEventView(PermissionRequiredMixin, TemplateView):
         sorted(role_list, key=lambda x: (x is None, x))
         context['roles'] = role_list
 
-        return super(self.__class__,self).get_context_data(**context)
+        return super().get_context_data(**context)
 
     def dispatch(self, request, *args, **kwargs):
         if 'as_csv' in kwargs:
             self.as_csv = True
-        return super(self.__class__, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def render_to_response(self, context, **response_kwargs):
         if self.as_csv:
             return self.render_to_csv(context)
-        return super(self.__class__, self).render_to_response(context, **response_kwargs)
+        return super().render_to_response(context, **response_kwargs)
 
     def render_to_csv(self, context):
         statement = context['statement']
@@ -274,12 +284,15 @@ class FinancesByEventView(PermissionRequiredMixin, TemplateView):
         return response
 
 
-class FinancesByMonthView(PermissionRequiredMixin, TemplateView):
+class FinancesByPeriodView(PermissionRequiredMixin, TemplateView):
     permission_required = 'financial.view_finances_bymonth'
     cache_timeout = 3600
-    template_name = 'financial/finances_bymonth.html'
+    template_name = 'financial/finances_byperiod.html'
     as_csv = False
     paginate_by = 24
+    period_type = None
+    base_view = None
+    base_view_csv = None
 
     def get_paginate_by(self,queryset=None):
         if self.as_csv:
@@ -304,15 +317,17 @@ class FinancesByMonthView(PermissionRequiredMixin, TemplateView):
         if kwargs.get('basis') not in EXPENSE_BASES.keys():
             kwargs['basis'] = 'accrualDate'
 
-        return super(self.__class__,self).get(request,*args,**kwargs)
+        return super().get(request, *args, **kwargs)
 
-    def get_context_data(self,**kwargs):
+    def get_context_data(self, **kwargs):
         context = {}
 
         # Determine the period over which the statement should be produced.
         year = kwargs.get('year')
 
-        eligible_years = list(set([x.year for x in ExpenseItem.objects.values_list('accrualDate',flat=True).distinct()]))
+        eligible_years = list(set(
+            [x.year for x in ExpenseItem.objects.values_list('accrualDate',flat=True).distinct()]
+        ))
         eligible_years.sort(reverse=True)
 
         if year and year not in eligible_years:
@@ -324,35 +339,44 @@ class FinancesByMonthView(PermissionRequiredMixin, TemplateView):
             'year': year,
             'current_year': year or 'all',
             'eligible_years': eligible_years,
+            'period_type': self.period_type,
+            'base_view': self.base_view,
+            'base_view_csv': self.base_view_csv,
         })
 
         page = self.kwargs.get('page') or self.request.GET.get('page') or 1
 
         context['statement'] = prepareFinancialStatement(year=year)
-        paginator, page_obj, statementByMonth, is_paginated = prepareStatementByMonth(year=year,basis=context['basis'],page=page,paginate_by=self.get_paginate_by())
+        paginator, page_obj, statementByPeriod, is_paginated = prepareStatementByPeriod(
+            year=year, basis=context['basis'], type=self.period_type,
+            page=page, paginate_by=self.get_paginate_by()
+        )
         context.update({
             'paginator': paginator,
             'page_obj': page_obj,
             'is_paginated': is_paginated,
         })
-        context['statement']['statementByMonth'] = statementByMonth
+        context['statement']['statementByPeriod'] = statementByPeriod
 
-        return super(self.__class__,self).get_context_data(**context)
+        return super().get_context_data(**context)
 
     def dispatch(self, request, *args, **kwargs):
         if 'as_csv' in kwargs:
             self.as_csv = True
-        return super(self.__class__, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def render_to_response(self, context, **response_kwargs):
         if self.as_csv:
             return self.render_to_csv(context)
-        return super(self.__class__, self).render_to_response(context, **response_kwargs)
+        return super().render_to_response(context, **response_kwargs)
 
     def render_to_csv(self, context):
         statement = context['statement']
         response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = 'attachment; filename="financialStatementByMonth.csv"'
+        response['Content-Disposition'] = \
+            'attachment; filename="financialStatementBy{}.csv"'.format(
+                str(self.period_type).title()
+            )
 
         writer = csv.writer(response, csv.excel)
         response.write(u'\ufeff'.encode('utf8'))  # BOM (optional...Excel needs it to open UTF-8 file properly)
@@ -369,9 +393,9 @@ class FinancesByMonthView(PermissionRequiredMixin, TemplateView):
         ]
         writer.writerow(header_list)
 
-        for x in statement['statementByMonth']:
+        for x in statement['statementByPeriod']:
             this_row_data = [
-                x['month_name'],
+                x['period_name'],
                 x['revenues'],
                 x['expenses']['instruction'],
                 x['expenses']['venue'],
@@ -383,6 +407,18 @@ class FinancesByMonthView(PermissionRequiredMixin, TemplateView):
             writer.writerow(this_row_data)
 
         return response
+
+
+class FinancesByMonthView(FinancesByPeriodView):
+    period_type = 'month'
+    base_view = 'financesByMonth'
+    base_view_csv = 'financesByMonthCSV'
+
+
+class FinancesByDateView(FinancesByPeriodView):
+    period_type = 'date'
+    base_view = 'financesByDate'
+    base_view_csv = 'financesByDateCSV'
 
 
 class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, TemplateView):
@@ -407,7 +443,19 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
                 except (ValueError, TypeError):
                     month = None
         else:
-            month = getIntFromGet(request,'month')
+            month = getIntFromGet(request, 'month')
+
+        try:
+            event_id = int(self.kwargs.get('event'))
+        except (ValueError, TypeError):
+            event_id = getIntFromGet(request, 'event')
+        
+        event = None
+        if event_id:
+            try:
+                event = Event.objects.get(id=event_id)
+            except ObjectDoesNotExist:
+                pass
 
         kwargs.update({
             'year': year,
@@ -415,6 +463,7 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
             'startDate': getDateTimeFromGet(request,'startDate'),
             'endDate': getDateTimeFromGet(request,'endDate'),
             'basis': request.GET.get('basis'),
+            'event': event,
         })
 
         if kwargs.get('basis') not in EXPENSE_BASES.keys():
@@ -423,7 +472,7 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
         context = self.get_context_data(**kwargs)
         return self.render_to_response(context)
 
-    def get_context_data(self,**kwargs):
+    def get_context_data(self, **kwargs):
         context = kwargs.copy()
         timeFilters = {}
 
@@ -432,6 +481,7 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
         month = kwargs.get('month')
         startDate = kwargs.get('startDate')
         endDate = kwargs.get('endDate')
+        event = kwargs.get('event')
 
         basis = kwargs.get('basis')
 
@@ -441,14 +491,18 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
             'rangeTitle': '',
         })
 
+        if event:
+            timeFilters['event'] = event
+            context['rangeTitle'] += '%s ' % event.name
+
         if startDate:
             timeFilters['%s__gte' % basis] = startDate
             context['rangeType'] = 'Date Range'
-            context['rangeTitle'] += _('From %s' % startDate.strftime('%b. %d, %Y'))
+            context['rangeTitle'] += str(_('From %s ' % startDate.strftime('%b. %d, %Y')))
         if endDate:
             timeFilters['%s__lt' % basis] = endDate
             context['rangeType'] = 'Date Range'
-            context['rangeTitle'] += _('To %s' % endDate.strftime('%b. %d, %Y'))
+            context['rangeTitle'] += str(_('To %s ' % endDate.strftime('%b. %d, %Y')))
 
         if not startDate and not endDate:
             if month and year:
@@ -469,6 +523,10 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
 
                 context['rangeType'] = 'Year'
                 context['rangeTitle'] = '%s' % year
+
+            elif event:
+                context['rangeType'] = 'Event'
+
             else:
                 # Assume year to date if nothing otherwise specified
                 timeFilters['%s__gte' % basis] = ensure_timezone(datetime(timezone.now().year,1,1))
@@ -477,8 +535,8 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
                 context['rangeType'] = 'YTD'
                 context['rangeTitle'] = _('Calendar Year To Date')
 
-        context['startDate'] = timeFilters['%s__gte' % basis]
-        context['endDate'] = timeFilters['%s__lt' % basis]
+        context['startDate'] = timeFilters.get('%s__gte' % basis)
+        context['endDate'] = timeFilters.get('%s__lt' % basis)
 
         # Revenues are booked on receipt basis, not payment/approval basis
         rev_timeFilters = timeFilters.copy()
@@ -486,10 +544,12 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
 
         if basis in ['paymentDate', 'approvalDate']:
             rev_basis = 'receivedDate'
-            rev_timeFilters['receivedDate__gte'] = rev_timeFilters['%s__gte' % basis]
-            rev_timeFilters['receivedDate__lt'] = rev_timeFilters['%s__lt' % basis]
-            del rev_timeFilters['%s__gte' % basis]
-            del rev_timeFilters['%s__lt' % basis]
+            if rev_timeFilters.get('%s__gte' % basis):
+                rev_timeFilters['receivedDate__gte'] = rev_timeFilters.get('%s__gte' % basis)
+                rev_timeFilters.pop('%s__gte' % basis,None)
+            if rev_timeFilters.get('%s__lt' % basis):
+                rev_timeFilters['receivedDate__lt'] = rev_timeFilters.get('%s__lt' % basis)
+                rev_timeFilters.pop('%s__lt' % basis,None)
 
         expenseItems = ExpenseItem.objects.filter(**timeFilters).annotate(net=F('total') + F('adjustments') + F('fees'),basisDate=Min(basis)).order_by(basis)
         revenueItems = RevenueItem.objects.filter(**rev_timeFilters).annotate(net=F('total') + F('adjustments') - F('fees'),basisDate=Min(rev_basis)).order_by(rev_basis)
@@ -526,8 +586,8 @@ class FinancialDetailView(FinancialContextMixin, PermissionRequiredMixin, Templa
             'revenueCategoryTotals': RevenueCategory.objects.filter(revenueitem__in=revenueItems).annotate(category_total=Sum('revenueitem__total'),category_adjustments=Sum('revenueitem__adjustments'),category_fees=Sum('revenueitem__fees')).annotate(category_net=F('category_total') + F('category_adjustments') - F('category_fees')),
         })
         context.update({
-            'registrationRevenueEventTotals': Event.objects.filter(eventregistration__invoiceitem__revenueitem__in=context['registrationRevenueItems']).annotate(event_total=Sum('eventregistration__invoiceitem__revenueitem__total'),event_adjustments=Sum('eventregistration__invoiceitem__revenueitem__adjustments'),event_fees=Sum('eventregistration__invoiceitem__revenueitem__fees')).annotate(event_net=F('event_total') + F('event_adjustments') - F('event_fees')),
-            'registrationRevenueOtherTotal': context['registrationRevenueItems'].filter(invoiceItem__finalEventRegistration__isnull=True).annotate(event_net=F('total') + F('adjustments') - F('fees')).aggregate(event_total=Sum('total'),event_adjustments=Sum('adjustments'),event_fees=Sum('fees'),event_net=Sum('net')),
+            'registrationRevenueEventTotals': Event.objects.filter(revenueitem__in=context['registrationRevenueItems']).annotate(event_total=Sum('revenueitem__total'),event_adjustments=Sum('revenueitem__adjustments'),event_fees=Sum('revenueitem__fees')).annotate(event_net=F('event_total') + F('event_adjustments') - F('event_fees')),
+            'registrationRevenueOtherTotal': context['registrationRevenueItems'].filter(event__isnull=True).annotate(event_net=F('total') + F('adjustments') - F('fees')).aggregate(event_total=Sum('total'),event_adjustments=Sum('adjustments'),event_fees=Sum('fees'),event_net=Sum('net')),
 
             'totalRegistrationRevenues': sum([x.category_net or 0 for x in context['revenueCategoryTotals'].filter(id=getConstant('financial__registrationsRevenueCat').id)]),
             'totalOtherRevenues': sum([x.category_net or 0 for x in context['revenueCategoryTotals'].exclude(id=getConstant('financial__registrationsRevenueCat').id)]),
@@ -632,6 +692,92 @@ class CompensationRuleResetView(CompensationActionView):
                     )
 
         return super(CompensationRuleResetView,self).form_valid(form)
+
+
+class ExpenseRuleGenerationView(AdminSuccessURLMixin, PermissionRequiredMixin, FormView):
+    template_name = 'financial/expense_generation.html'
+    form_class = ExpenseRuleGenerationForm
+    permission_required = 'financial.can_generate_repeated_expenses'
+
+    def get_context_data(self,**kwargs):
+        context = super(ExpenseRuleGenerationView,self).get_context_data(**kwargs)
+
+        fields = getattr(context.get('form',{}),'fields',OrderedDict())
+
+        context.update({
+            'form_title': _('Generate rule-based financial items'),
+            'form_description': _(
+                'This form is used to generate expense items and revenue items ' +
+                'based on pre-set repeated expense rules. Please check the boxes ' +
+                'for the rules that you wish to apply. Depending on your site ' +
+                'settings, regular automatic generation of these financial items ' +
+                'may already be occurring. Using this form should not lead duplicate ' +
+                'items to be generated under these rules.'
+            ),
+            'staff_keys': [key for key in fields.keys()
+                if key.startswith('staff') and key != 'staff'
+            ],
+            'venue_keys': [key for key in fields.keys()
+                if key.startswith('location') or key.startswith('room')
+            ],
+            'generic_keys': [key for key in fields.keys()
+                if key.startswith('generic') and key != 'generic'
+            ],
+        })
+        return context
+
+    def form_valid(self, form):
+        try:
+            generic_rules = RepeatedExpenseRule.objects.filter(id__in=[
+                int(key.split('_')[-1]) for key, value in form.cleaned_data.items() if key.startswith('rule_') and value
+            ]).order_by('id')
+            location_rules = RepeatedExpenseRule.objects.filter(id__in=[
+                int(key.split('_')[-1]) for key, value in form.cleaned_data.items() if (
+                    key.startswith('locationrule_') or key.startswith('roomrule_')
+                ) and value
+            ]).order_by('id')
+            staff_rules = RepeatedExpenseRule.objects.filter(id__in=[
+                int(key.split('_')[-1]) for key, value in form.cleaned_data.items() if (
+                    key.startswith('staffdefaultrule_') or key.startswith('staffmemberrule_')
+                ) and value                
+            ]).order_by('id')
+        except ValueError:
+            return HttpResponseBadRequest(_('Invalid rules provided.'))
+
+        response_items = [
+            {
+                'name': x.ruleName,
+                'id': x.id,
+                'type':_('Venue rental'),
+                'created': createExpenseItemsForVenueRental(rule=x)
+            } for x in location_rules
+        ]
+        response_items += [
+            {
+                'name': x.ruleName,
+                'id': x.id,
+                'type':_('Staff expenses'),
+                'created': createExpenseItemsForEvents(rule=x)
+            } for x in staff_rules
+        ]
+        response_items += [
+            {
+                'name': x.ruleName,
+                'id': x.id,
+                'type':_('Other expenses'),
+                'created': createGenericExpenseItems(rule=x)
+            } for x in generic_rules
+        ]
+        if form.cleaned_data.get('registrations'):
+            response_items += [{
+                'name': _('Revenue items for registrations'),
+                'type': _('Revenue items for registrations'),
+                'created': createRevenueItemsForRegistrations()
+            },]
+
+        success_message = ugettext('Successfully created {count} financial items.'.format(count=sum([x.get('created',0) or 0 for x in response_items])))
+        messages.success(self.request, success_message)
+        return HttpResponseRedirect(self.get_success_url())
 
 
 class AllExpensesViewCSV(PermissionRequiredMixin, View):

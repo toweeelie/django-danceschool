@@ -2,7 +2,7 @@ from django.http import HttpResponseRedirect, Http404, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.views.generic import FormView, CreateView, UpdateView, DetailView, TemplateView, ListView
 from django.db.models import Min, Q, Count
 from django.utils.translation import ugettext_lazy as _
@@ -27,20 +27,20 @@ import logging
 from .models import (Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
                      StaffMember, Instructor, Invoice, Customer)
 from .forms import (SubstituteReportingForm, StaffMemberBioChangeForm, RefundForm, EmailContactForm,
-                    RepeatEventForm, InvoiceNotificationForm)
+                    RepeatEventForm, InvoiceNotificationForm, EventAutocompleteForm)
 from .constants import getConstant, EMAIL_VALIDATION_STR, REFUND_VALIDATION_STR
 from .mixins import (EmailRecipientMixin, StaffMemberObjectMixin, FinancialContextMixin,
                      AdminSuccessURLMixin, EventOrderMixin, SiteHistoryMixin)
 from .signals import get_customer_data
 from .utils.requests import getIntFromGet
-from .utils.timezone import ensure_localtime, ensure_timezone
+from .utils.timezone import ensure_timezone
 
 
 # Define logger for this file
 logger = logging.getLogger(__name__)
 
 
-class EventRegistrationSelectView(PermissionRequiredMixin, EventOrderMixin, ListView):
+class EventRegistrationSelectView(PermissionRequiredMixin, EventOrderMixin, FormView):
     '''
     This view is used to select an event for viewing registration data in
     the EventRegistrationSummaryView
@@ -48,15 +48,32 @@ class EventRegistrationSelectView(PermissionRequiredMixin, EventOrderMixin, List
     template_name = 'core/events_viewregistration_list.html'
     permission_required = 'core.view_registration_summary'
     reverse_time_ordering = True
+    form_class = EventAutocompleteForm
 
     def get_queryset(self):
+        ''' Recent events are listed in link form. '''
+
         return Event.objects.filter(
             Q(startTime__gte=timezone.now() - timedelta(days=90)) & (
                 Q(series__isnull=False) | Q(publicevent__isnull=False)
             )
         ).annotate(count=Count('eventregistration')).annotate(**self.get_annotations()).exclude(
-            Q(count=0) & Q(status__in=[Event.RegStatus.hidden, Event.RegStatus.regHidden, Event.RegStatus.disabled])
+            Q(count=0) & Q(status__in=[
+                Event.RegStatus.hidden, Event.RegStatus.regHidden, Event.RegStatus.disabled
+            ])
         )
+
+    def get_context_data(self, **kwargs):
+        context = super(EventRegistrationSelectView,self).get_context_data(**kwargs)
+        queryset = self.get_queryset()
+        context.update({'queryset': queryset, 'object_list': queryset, 'event_list': queryset})
+        return context
+
+    def form_valid(self, form):
+        return HttpResponseRedirect(reverse(
+            'viewregistrations',
+            args=(form.cleaned_data.get('event').id,)
+        ))
 
 
 class EventRegistrationSummaryView(PermissionRequiredMixin, SiteHistoryMixin, DetailView):
@@ -1005,7 +1022,7 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
             # For each new occurrence, we determine the new startime by the distance from
             # midnight of the first occurrence date, where the first occurrence date is
             # replaced by the date given in repeat list
-            old_min_time = ensure_localtime(event.startTime).replace(hour=0, minute=0, second=0, microsecond=0)
+            old_min_time = event.localStartTime.replace(hour=0, minute=0, second=0, microsecond=0)
 
             old_occurrence_data = [
                 (x.startTime - old_min_time, x.endTime - old_min_time, x.cancelled)

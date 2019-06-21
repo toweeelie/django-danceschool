@@ -1,6 +1,53 @@
 Version History
 ===============
 
+
+0.8.6 - April 22, 2019
+-------------------------
+
+- **NEW:** Financial performance by date (uses same view as financial performance by month)
+- Added ability to submit class registrations via Ajax and receive a JSON response
+- Fixed RevenueItem paymentMethod not editable in admin
+- Documentation improvements re: emails
+- Miscellaneous bug fixes
+
+0.8.5 - April 3, 2019
+-------------------------
+
+- Added view for manual generation of repeated financial items, customizable by rule. 
+- Fixed event not editable on RevenueItem admin.
+- Improved reference links in admin between revenue/expense items, events, and event financial detail views.
+- Fixed #139, instance_of reference in EventAutocompleteForm creating issues with initial migration because of content_type reference.
+- Re: #140, pinned Huey to version <2.0 to avoid compatibility issues.
+
+0.8.4 - March 22, 2019
+-------------------------
+
+- Added EventAutocompleteForm for easier selecting of events in Expense/Revenue reporting forms (#134)
+- Improved Revenue Reporting form by adding adjustments/fees and adding ability to mark revenue as received (#135)
+- Fixed PublicEvent model showing UTC instead of local time (#136)
+- Added direct registration link to PublicEventAdmin (#125)
+- Fixed bug that excluded prior-year expenses from financial detail view for events (#137)
+- Misc. bug fixes
+
+0.8.3 - March 19, 2019
+-------------------------
+
+- Added event-specific financial detail view
+- Fixed issue with financial detail view with explicit start/end dates
+- Fixed issue with reverse() call when prior site history is missing (e.g. viewing an invoice directly from an email link)
+- Fixed extra column with total registrations in finances by event view
+
+0.8.2 - February 24, 2019
+-------------------------
+
+- Fixed issue with ExpenseItem changelist form treating payTo as a required field
+- Fixed issue with display of most popular vouchers in school stats (#120)
+- Fixed access to QuerySet object in core/handlers.py (#121)
+- Fixed configuration issue with Redis dependency (#122)
+- Fixed issue with reversed occurrence dates in individual series view
+- Fixed incorrect page template for staff list in setupschool script (#115)
+
 0.8.1 - January 9, 2019
 -----------------------
 
@@ -67,7 +114,7 @@ version 0.8.0.
 - Updated use of Square API to reflect new method of loading access token.
 
 0.6.0 - September 9, 2018
--------------------
+-------------------------
 
 - **New:** Themes app for easier customization of your initial site
   templates.  The project
@@ -119,7 +166,7 @@ version 0.8.0.
 - Fixed duplicate listing of venue expense items in FinancialDetailView.
 
 0.5.2 - February 21, 2018
------------------------
+-------------------------
 
 - Discounts now show up on the registration cart page, not just the final page (#79)
 - Fixed issue with change in name of CKEditor theme (#83)
@@ -128,7 +175,7 @@ version 0.8.0.
 
 
 0.5.1 - February 7, 2018
------------------------
+------------------------
 
 - Updated to use Django 1.11 and Django CMS 3.5
 - Overhaul and simplification of event templates

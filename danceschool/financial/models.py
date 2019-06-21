@@ -422,6 +422,14 @@ class RepeatedExpenseRule(PolymorphicModel):
         ''' Should be overridden by child classes with something more descriptive. '''
         return str(_('Repeated expense rule: %s' % self.name))
 
+    class Meta:
+        verbose_name = _('Repeated expense rule')
+        verbose_name_plural = _('Repeated expense rules')
+
+        permissions = (
+            ('can_generate_repeated_expenses',_('Able to generate rule-based repeated expenses using the admin view')),
+        )
+
 
 class LocationRentalInfo(RepeatedExpenseRule):
     '''
@@ -961,8 +969,10 @@ class RevenueItem(models.Model):
         verbose_name_plural = _('Revenue items')
 
         permissions = (
+            ('mark_revenues_received',_('Mark revenues as received at the time of submission')),
             ('export_financial_data',_('Export detailed financial transaction information to CSV')),
             ('view_finances_bymonth',_('View school finances month-by-month')),
+            ('view_finances_bydate',_('View school finances day-by-day')),
             ('view_finances_byevent',_('View school finances by Event')),
             ('view_finances_detail',_('View school finances as detailed statement')),
         )

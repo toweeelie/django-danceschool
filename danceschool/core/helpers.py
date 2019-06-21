@@ -1,5 +1,5 @@
 from django.core.mail import send_mail
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -52,7 +52,7 @@ def getReturnPage(siteHistory,prior=False):
         returnPage = siteHistory.get('returnPage',None)
         returnPageName = siteHistory.get('returnPageName',None)
 
-    if expiry and expiry >= timezone.now() and returnPage:
+    if expiry and expiry >= timezone.now() and returnPage[0]:
         return {
             'url': reverse(returnPage[0],kwargs=returnPage[1]),
             'title': returnPageName,

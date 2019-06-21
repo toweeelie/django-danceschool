@@ -17,11 +17,14 @@ import json
 import logging
 from djangocms_text_ckeditor.widgets import TextEditorWidget
 
-from .models import EventStaffMember, SubstituteTeacher, Event, EventOccurrence, Series, SeriesTeacher, Instructor, StaffMember, EmailTemplate, Location, Customer, Invoice, get_defaultEmailName, get_defaultEmailFrom
+from .models import (
+    EventStaffMember, SubstituteTeacher, Event, EventOccurrence, PublicEvent,
+    Series, SeriesTeacher, Instructor, StaffMember, EmailTemplate, Location,
+    Customer, Invoice, get_defaultEmailName, get_defaultEmailFrom
+)
 from .constants import HOW_HEARD_CHOICES, getConstant, REG_VALIDATION_STR
 from .signals import check_student_info
 from .utils.emails import get_text_for_html
-from .utils.timezone import ensure_localtime
 
 # Define logger for this file
 logger = logging.getLogger(__name__)
@@ -247,11 +250,11 @@ class ClassChoiceForm(forms.Form):
             if isinstance(event,Series):
                 if event.allowDropins and user and user.has_perm('core.register_dropins'):
                     for occurrence in event.eventoccurrence_set.all():
-                        field_choices += ((json.dumps({'dropin_' + str(occurrence.id): True}), _('Drop-in: ') + ensure_localtime(occurrence.startTime).strftime('%B %-d')),)
+                        field_choices += ((json.dumps({'dropin_' + str(occurrence.id): True}), _('Drop-in: ') + occurrence.localStartTime.strftime('%B %-d')),)
                         self.permitted_event_keys.append('dropin_' + str(occurrence.id))
                 elif (user and user.has_perm('core.override_register_dropins')):
                     for occurrence in event.eventoccurrence_set.all():
-                        field_choices += ((json.dumps({'dropin_' + str(occurrence.id): True}),{'label': _('Drop-in: ') + ensure_localtime(occurrence.startTime).strftime('%B %-d'),'override':True}),)
+                        field_choices += ((json.dumps({'dropin_' + str(occurrence.id): True}),{'label': _('Drop-in: ') + occurrence.localStartTime.strftime('%B %-d'),'override':True}),)
                         self.permitted_event_keys.append('dropin_' + str(occurrence.id))
 
             self.fields['event_' + str(event.id)] = CheckboxSeriesChoiceField(
@@ -579,6 +582,42 @@ class DoorAmountForm(forms.Form):
                 raise ValidationError(_('Must specify the email address of the invoice recipient.'))
 
         return form_data
+
+
+class EventAutocompleteForm(forms.Form):
+    '''
+    This form can be used for views that autocomplete events (e.g. viewing
+    registrations), but it has no other fields by default.
+    '''
+
+    event = forms.ModelChoiceField(
+        queryset=Event.objects.filter(Q(publicevent__isnull=False) | Q(series__isnull=False)),
+        label=_('Search for an Event'),
+        required=True,
+        widget=autocomplete.ModelSelect2(
+            url='autocompleteEvent',
+            attrs={
+                # This will set the input placeholder attribute:
+                'data-placeholder': _('Enter event title, year, or month'),
+                # This will set the yourlabs.Autocomplete.minimumCharacters
+                # options, the naming conversion is handled by jQuery
+                'data-minimum-input-length': 0,
+                'data-max-results': 10,
+                'class': 'modern-style',
+                'data-html': True,
+            }
+        )
+    )
+
+    def __init__(self, *args, **kwargs):
+
+        super(EventAutocompleteForm,self).__init__(*args,**kwargs)
+
+        self.helper = FormHelper()
+        self.helper.layout = Layout(
+            'event',
+            Submit('submit',_('Submit'))
+        )
 
 
 class RefundForm(forms.ModelForm):
