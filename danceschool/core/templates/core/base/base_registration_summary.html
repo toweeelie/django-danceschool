@@ -16,7 +16,7 @@
 	{% block summary %}
 
 	    <h2>
-	    	{% blocktrans with name=registration.firstName %}
+	    	{% blocktrans with name=registration.firstName|default_if_none:"Friend" %}
 	    	Hi {{ name }}!
 	    	{% endblocktrans %}
 	    </h2>
@@ -87,31 +87,21 @@
 	{% endblock %}
 
 	{% block payment_info %}
+	     {% if is_complete or is_free %}
+			<p>{% trans "Thanks! You're all set." %}</p>
 
-	    <p>
-	     {% if is_free %}
-	        {% trans "Thanks! You're all set." %}
-	     {% else %}
-		     {% trans "In order to complete your registration you must click on the button below to make a payment." %}</p>
-
-		     {% if payAtDoor %}
-		        <form action="" method="post">
-		            {% crispy form %}
-		        </form>
-		     {% endif %}
+			<p><a href="{{ returnPage }}" class="btn btn-primary btn-lg">{% trans "Return" %}</a></p>
+		 {% else %}
+		 	<p>
+			 {% trans "In order to complete your registration you must click on the button below to make a payment." %}
+			</p>
 
 		 	{% if payAtDoor %}
-		 		<div class="card mt-4">
-	 				<h6 class="card-header">{% trans "Immediate Payment" %}</h6>
-		 			<div class="card-body">
-		 	{% endif %}
-
-		 	{% static_placeholder "registration_payment_placeholder" %}
-
-		 	{% if payAtDoor %}
-		 			</div>
-	 			</div>
-		 	{% endif %} 
+				{% static_placeholder "registration_payatdoor_placeholder" %}
+				{% static_placeholder "registration_invoice_placeholder" %}
+			{% else %}
+				{% static_placeholder "registration_payment_placeholder" %}
+			{% endif %}
 	    {% endif %}
 
 	{% endblock %}

@@ -78,10 +78,11 @@ Note: This process may take a minute or two to complete.
                 ('change_user', 'auth', 'user'),
             ]
 
-            app_add_list = ['cms','core','djangocms_forms','djangocms_text_ckeditor','easy_thumbnails','filer']
+            app_add_list = ['cms', 'core', 'djangocms_forms', 'djangocms_text_ckeditor', 'easy_thumbnails', 'filer']
             for this_app in [
                 'danceschool.financial',
                 'danceschool.discounts',
+                'danceschool.door',
                 'danceschool.faq',
                 'danceschool.guestlist',
                 'danceschool.news',
@@ -91,8 +92,10 @@ Note: This process may take a minute or two to complete.
                 'danceschool.stats',
                 'danceschool.vouchers',
                 'danceschool.banlist',
+                'danceschool.payments.payatdoor',
                 'danceschool.payments.paypal',
                 'danceschool.payments.stripe',
+                'danceschool.payments.square',
             ]:
                 if apps.is_installed(this_app):
                     app_add_list.append(this_app.split('.')[1])
@@ -102,7 +105,9 @@ Note: This process may take a minute or two to complete.
                     board_group.permissions.add(perm)
             self.stdout.write('Finished creating \'Board\' group and setting initial permissions.\n')
 
-        create_instructor_group = self.boolean_input('Create \'Instructor\' group with default initial permissions [Y/n]', True)
+        create_instructor_group = self.boolean_input(
+            'Create \'Instructor\' group with default initial permissions [Y/n]', True
+        )
         if create_instructor_group:
             instructor_group = Group.objects.get_or_create(name='Instructor')[0]
 
@@ -116,11 +121,12 @@ Note: This process may take a minute or two to complete.
                 ('update_instructor_bio', 'core', 'instructor'),
                 ('view_own_instructor_finances', 'core', 'instructor'),
                 ('view_own_instructor_stats', 'core', 'instructor'),
-                ('process_refunds','core','invoice'),
+                ('process_refunds', 'core', 'invoice'),
                 ('send_invoices', 'core', 'invoice'),
-                ('view_all_invoices','core','invoice'),
+                ('view_all_invoices', 'core', 'invoice'),
                 ('accept_door_payments', 'core', 'registration'),
                 ('checkin_customers', 'core', 'registration'),
+                ('ajax_registration', 'core', 'registration'),
                 ('override_register_closed', 'core', 'registration'),
                 ('override_register_dropins', 'core', 'registration'),
                 ('override_register_soldout', 'core', 'registration'),
@@ -137,7 +143,7 @@ Note: This process may take a minute or two to complete.
                 ('mark_expenses_paid', 'financial', 'expenseitem'),
                 ('add_revenueitem', 'financial', 'revenueitem'),
                 ('view_finances_bymonth', 'financial', 'revenueitem'),
-                ('mark_revenues_received','financial', 'revenueitem'),
+                ('mark_revenues_received', 'financial', 'revenueitem'),
                 ('add_newsitem', 'news', 'newsitem'),
                 ('change_newsitem', 'news', 'newsitem'),
                 ('ignore_requirements', 'prerequisites', 'requirement'),
@@ -148,7 +154,7 @@ Note: This process may take a minute or two to complete.
                 ('change_privateevent', 'private_events', 'privateevent'),
                 ('delete_privateevent', 'private_events', 'privateevent'),
                 ('edit_own_availability', 'private_lessons', 'instructoravailabilityslot'),
-                ('view_banlist', 'banlist','bannedperson'),
+                ('view_banlist', 'banlist', 'bannedperson'),
                 ('view_guestlist', 'guestlist', 'guestlist'),
             ]
 
@@ -157,26 +163,30 @@ Note: This process may take a minute or two to complete.
                     instructor_group.permissions.add(perm)
             self.stdout.write('Finished creating \'Instructor\' group and setting initial permissions.\n')
 
-        create_regdesk_group = self.boolean_input('Create \'Registration Desk\' group with default initial permissions [Y/n]', True)
+        create_regdesk_group = self.boolean_input(
+            'Create \'Registration Desk\' group with default initial permissions [Y/n]',
+            True
+        )
         if create_regdesk_group:
             regdesk_group = Group.objects.get_or_create(name='Registration Desk')[0]
 
             give_explicit = [
                 ('view_page', 'cms', 'page'),
                 ('can_autocomplete_users', 'core', 'customer'),
-                ('process_refunds','core','invoice'),
+                ('process_refunds', 'core', 'invoice'),
                 ('send_invoices', 'core', 'invoice'),
-                ('view_all_invoices','core','invoice'),
+                ('view_all_invoices', 'core', 'invoice'),
                 ('accept_door_payments', 'core', 'registration'),
                 ('checkin_customers', 'core', 'registration'),
                 ('override_register_closed', 'core', 'registration'),
                 ('override_register_dropins', 'core', 'registration'),
                 ('override_register_soldout', 'core', 'registration'),
+                ('ajax_registration', 'core', 'registration'),
                 ('register_dropins', 'core', 'registration'),
                 ('view_registration_summary', 'core', 'registration'),
                 ('view_staff_directory', 'core', 'staffmember'),
                 ('ignore_requirements', 'prerequisites', 'requirement'),
-                ('view_banlist', 'banlist','bannedperson'),
+                ('view_banlist', 'banlist', 'bannedperson'),
                 ('view_guestlist', 'guestlist', 'guestlist'),
             ]
 

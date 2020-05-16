@@ -1,17 +1,21 @@
 from django.db import models
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MinValueValidator, RegexValidator
 from django.utils.translation import ugettext_lazy as _
 from django.utils import timezone
 import random
 import string
 
-from danceschool.core.models import CustomerGroup, Customer, Registration, TemporaryRegistration, ClassDescription, DanceTypeLevel, SeriesCategory, PublicEventCategory, EventSession
+from danceschool.core.models import (
+    CustomerGroup, Customer, Registration, TemporaryRegistration,
+    ClassDescription, DanceTypeLevel, SeriesCategory, PublicEventCategory,
+    EventSession
+)
 
 
 class VoucherCategory(models.Model):
-    name = models.CharField(_('Name'),max_length=80,unique=True)
-    description = models.TextField(_('Description'),null=True,blank=True)
+    name = models.CharField(_('Name'), max_length=80, unique=True)
+    description = models.TextField(_('Description'), null=True, blank=True)
 
     def __str__(self):
         return self.name
@@ -23,27 +27,59 @@ class VoucherCategory(models.Model):
 
 class Voucher(models.Model):
     # unique identifier
-    voucherId = models.CharField(_('Voucher Code'),max_length=100,unique=True)
+    voucherId = models.CharField(
+        _('Voucher Code'), max_length=100, unique=True,
+        validators=[RegexValidator(regex=r'^[a-zA-Z\-_0-9]+$')]
+    )
 
     # i.e. Social Living April 2013
-    name = models.CharField(_('Name'),max_length=80,help_text=_('Give a descriptive name that will be used when a customer applies the voucher.'))
+    name = models.CharField(
+        _('Name'), max_length=80,
+        help_text=_(
+            'Give a descriptive name that will be used when a customer applies the voucher.'
+        )
+    )
 
     # i.e. LivingSocial.  This is for categorical convenience only.
-    category = models.ForeignKey(VoucherCategory,verbose_name=_('Category'),null=True)
+    category = models.ForeignKey(
+        VoucherCategory, verbose_name=_('Category'), null=True,
+        on_delete=models.SET_NULL,
+    )
 
     # Optional description for when vouchers are given in special cases.
-    description = models.CharField(_('Description (optional)'),null=True,blank=True,max_length=200,help_text=_('For internal use only'))
+    description = models.CharField(
+        _('Description (optional)'), null=True, blank=True, max_length=200,
+        help_text=_('For internal use only')
+    )
 
     # i.e. $45
-    originalAmount = models.FloatField(_('Original Amount'),help_text=_('Enter the original amount of the voucher here.'),validators=[MinValueValidator(0)])
-    refundAmount = models.FloatField(_('Refunded Amount'),default=0,help_text=_('When a refund is processed through Paypal, this should automatically update.  Otherwise it should not need to be changed.'))
+    originalAmount = models.FloatField(
+        _('Original Amount'),
+        help_text=_('Enter the original amount of the voucher here.'),
+        validators=[MinValueValidator(0)]
+    )
+    refundAmount = models.FloatField(
+        _('Refunded Amount'), default=0,
+        help_text=_(
+            'When a refund is processed through Paypal, this should' +
+            ' automatically update.  Otherwise it should not need to be changed.'
+        )
+    )
 
     # i.e. $2 - For tracking new students.  If null,
     # then there is no limit imposed.
-    maxAmountPerUse = models.FloatField(_('Max. Amount Per Use'),null=True,blank=True,validators=[MinValueValidator(0)],help_text=_('If specified, this will limit the size of a repeated-use voucher.  If unspecified, there is no limit.  Be sure to specify this for publicly advertised voucher codes.'))
+    maxAmountPerUse = models.FloatField(
+        _('Max. Amount Per Use'), null=True, blank=True,
+        validators=[MinValueValidator(0)],
+        help_text=_(
+            'If specified, this will limit the size of a repeated-use voucher.' +
+            '  If unspecified, there is no limit.  Be sure to specify this for' +
+            ' publicly advertised voucher codes.'
+        )
+    )
 
     # i.e. For Groupon and LivingSocial, these are single use
-    singleUse = models.BooleanField(_('Single Use'),default=False)
+    singleUse = models.BooleanField(_('Single Use'), default=False)
 
     # If a customer has been with us before, we don't want them to be able to use
     # LivingSocial or Groupon
@@ -53,21 +89,29 @@ class Voucher(models.Model):
     # existing customers, like generic referral vouchers.
     forPreviousCustomersOnly = models.BooleanField(_('For Previous Customers Only'), default=False)
 
+    # Some vouchers should only be used at the door (e.g. internal price
+    # adjustment vouchers that we don't want anyone to be able to use unless they
+    # are logged in).
+    doorOnly = models.BooleanField(_('At-the-door Registrations Only'), default=False)
+
     # Keep track of when vouchers are created
-    creationDate = models.DateTimeField(_('Creation Date'),auto_now_add=True)
+    creationDate = models.DateTimeField(_('Creation Date'), auto_now_add=True)
 
     # If null, then there is no expiration date
-    expirationDate = models.DateTimeField(_('Expiration Date'), null=True,blank=True)
+    expirationDate = models.DateTimeField(_('Expiration Date'), null=True, blank=True)
 
     # Vouchers can be disabled manually with this field.
-    disabled = models.BooleanField(_('Voucher Disabled'),default=False,help_text=_('Check this box to disable the voucher entirely.'))
+    disabled = models.BooleanField(
+        _('Voucher Disabled'), default=False,
+        help_text=_('Check this box to disable the voucher entirely.')
+    )
 
     @classmethod
-    def create_new_code(cls,**kwargs):
+    def create_new_code(cls, **kwargs):
         '''
         Creates a new Voucher with a unique voucherId
         '''
-        prefix = kwargs.pop('prefix','')
+        prefix = kwargs.pop('prefix', '')
 
         new = False
         while not new:
@@ -76,7 +120,7 @@ class Voucher(models.Model):
             if not Voucher.objects.filter(voucherId='%s%s' % (prefix, random_string)).exists():
                 new = True
 
-        return Voucher.objects.create(voucherId='%s%s' % (prefix, random_string),**kwargs)
+        return Voucher.objects.create(voucherId='%s%s' % (prefix, random_string), **kwargs)
 
     def getHasExpired(self):
         if self.expirationDate and timezone.now() > self.expirationDate:
@@ -121,67 +165,227 @@ class Voucher(models.Model):
     amountLeft = property(fget=getAmountLeft)
     amountLeft.fget.short_description = _('Amount remaining')
 
-    def validateForCustomerAndSeriess(self,customer,seriess):
-        # check whether it's expired
+    def getMaxToUse(self):
+        # If max amount per use is specified, use that, otherwise use amountLeft
+        return min(
+            self.amountLeft, self.maxAmountPerUse or self.amountLeft
+        )
+
+    maxToUse = property(fget=getMaxToUse)
+    maxToUse.fget.short_description = _('Maximum amount available for next use')
+
+    def validate(
+        self, customer=None, event_list=[], payAtDoor=False, raise_errors=True,
+        return_amount=False, validate_customer=True, validate_events=True
+    ):
+        '''
+        Check whether this voucher is valid given optional parameters for the
+        customer and an iterable (e.g. queryset or list) of events for which it
+        may be used.  This method can also be specified to return the maximum
+        amount for which a voucher may be used, which is just the smaller of its
+        remaining balance and the max amount per its use.  By default, the method
+        just raises a ValidationError if the voucher is not applicable
+        (easiest for form field validation).  But, it can also be specified to return
+        validation errors instead for downstream parsing, Ajax return, etc.
+        Additionally, the method can be specified to skip validation of customer
+        or event contents, which may be useful when a customer has not yet been
+        specified or events have not yet been selected.
+        '''
+
+        errors = []
+        warnings = []
+
+        if not hasattr(event_list, '__iter__'):
+            raise ValueError(_('Invalid event list.'))
+        if (type(customer) not in [Customer, type(None)]):
+            raise ValueError(_('Invalid customer.'))
 
         if self.hasExpired:
-            raise ValidationError(_('Voucher has expired.'))
-
-        # not used
-        if self.singleUse and len(VoucherUse.objects.filter(voucher=self)) > 0:
-            raise ValidationError(_('Voucher has already been used.'))
+            errors.append(
+                ValidationError(_('Voucher has expired.'), code='expired')
+            )
 
         # there is money left
         if self.amountLeft <= 0:
-            raise ValidationError(_('There is no money left on this voucher.'))
-
-        # every series is either in the list or there is no list
-        if self.classvoucher_set.exists():
-            for s in seriess:
-                if not self.classvoucher_set.filter(classDescription=s.classDescription).exists():
-                    raise ValidationError(_('This voucher can be only used for specific classes.'))
-        if self.dancetypevoucher_set.exists():
-            for s in seriess:
-                if not self.dancetypevoucher_set.filter(danceTypeLevel=s.classDescription.danceTypeLevel).exists():
-                    raise ValidationError(_('This voucher can be only used for specific classes.'))
-        if self.seriescategoryvoucher_set.exists():
-            for s in seriess:
-                if not self.seriescategoryvoucher_set.filter(seriesCategory=s.category).exists():
-                    raise ValidationError(_('This voucher can be only used for specific classes.'))
-        if self.publiceventcategoryvoucher_set.exists():
-            for s in seriess:
-                if not self.publiceventcategoryvoucher_set.filter(publicEventCategory=s.category).exists():
-                    raise ValidationError(_('This voucher can be only used for specific events.'))
-        if self.sessionvoucher_set.exists():
-            for s in seriess:
-                if not self.sessionvoucher_set.filter(session=s.session).exists():
-                    raise ValidationError(_('This voucher can be only used for specific classes or events.'))
+            errors.append(
+                ValidationError(
+                    _('There is no money left on this voucher.'),
+                    code='no_remaining'
+                )
+            )
 
         # is not disabled
         if self.disabled:
-            raise ValidationError(_('This voucher has been disabled.'))
+            errors.append(
+                ValidationError(_('This voucher has been disabled.'), code='disabled')
+            )
 
-        # customer is either in the list or there is no list
-        if not self.isValidForAnyCustomer:
-            if not customer:
-                raise ValidationError(_('This voucher is associated with a specific customer or customer group.'))
+        # not used (for single-use vouchers)
+        if self.singleUse and self.voucheruse_set.count() > 0:
+            errors.append(
+                ValidationError(
+                    _('This single-use voucher has already been used.'),
+                    code='used'
+                )
+            )
 
-            cvs = CustomerVoucher.objects.filter(voucher=self)
-            cgvs = CustomerGroupVoucher.objects.filter(voucher=self)
+        if self.doorOnly and not payAtDoor:
+            errors.append(
+                ValidationError(
+                    _('This voucher can only be used for registration at the door.'),
+                    code='door_only'
+                )
+            )
 
-            if cvs.exists() and not cvs.filter(customer=customer).exists():
-                raise ValidationError(_('This voucher is associated with a specific customer.'))
-            elif cgvs.exists() and not cgvs.filter(group__in=customer.groups.all()).exists():
-                raise ValidationError(_('This voucher is associated with a specific customer group.'))
+        # To avoid extraneous database calls, stop here if we're just going to
+        # reject the voucher anyway.
+        if errors and raise_errors:
+            raise ValidationError(errors)
 
-        if self.forFirstTimeCustomersOnly and customer and customer.numClassSeries > 0:
-            raise ValidationError(_('This voucher can only be used by first time customers.'))
+        # Only validate event_list contents if specified (default is True)
+        if validate_events:
+            # every series is either in the list or there is no list
+            if self.classvoucher_set.exists():
+                for s in event_list:
+                    if not self.classvoucher_set.filter(
+                        classDescription=s.classDescription
+                    ).exists():
+                        errors.append(
+                            ValidationError(
+                                _('This voucher can be only used for specific classes.'),
+                                code='classvoucher_invalid'
+                            )
+                        )
+            if self.dancetypevoucher_set.exists():
+                for s in event_list:
+                    if not self.dancetypevoucher_set.filter(
+                        danceTypeLevel=s.classDescription.danceTypeLevel
+                    ).exists():
+                        errors.append(
+                            ValidationError(
+                                _('This voucher can be only used for specific classes.'),
+                                code='dancetypevoucher_invalid'
+                            )
+                        )
+            if self.seriescategoryvoucher_set.exists():
+                for s in event_list:
+                    if not self.seriescategoryvoucher_set.filter(seriesCategory=s.category).exists():
+                        errors.append(
+                            ValidationError(
+                                _('This voucher can be only used for specific classes.'),
+                                code='seriescategoryvoucher_invalid'
+                            )
+                        )
+            if self.publiceventcategoryvoucher_set.exists():
+                for s in event_list:
+                    if not self.publiceventcategoryvoucher_set.filter(
+                        publicEventCategory=s.category
+                    ).exists():
+                        errors.append(
+                            ValidationError(
+                                _('This voucher can be only used for specific events.'),
+                                code='publiceventcategoryvoucher_invalid'
+                            )
+                        )
+            if self.sessionvoucher_set.exists():
+                for s in event_list:
+                    if not self.sessionvoucher_set.filter(session=s.session).exists():
+                        errors.append(
+                            ValidationError(
+                                _('This voucher can be only used for specific classes or events.'),
+                                code='sessionvoucher_invalid'
+                            )
+                        )
+        elif (
+            self.classvoucher_set.exists() or
+            self.dancetypevoucher_set.exists() or
+            self.seriescategoryvoucher_set.exists() or
+            self.publiceventcategoryvoucher_set.exists() or
+            self.sessionvoucher_set.exists()
+        ):
+            warnings.append({
+                'code': 'event_restrictions',
+                'message': _('This voucher can be only used for specific classes or events.')
+            })
 
-        if self.forPreviousCustomersOnly and (not customer or customer.numClassSeries == 0):
-            raise ValidationError(_('This voucher can only be used by existing customers.  If you are an existing customer, be sure to register with the same email address that you have used previously.'))
+        # Only validate event_list contents if specified (default is True)
+        if validate_customer:
+            # customer is either in the list or there is no list
+            if not self.isValidForAnyCustomer:
+                if not customer:
+                    errors.append(
+                        ValidationError(
+                            _('This voucher is associated with a specific customer or customer group.'),
+                            code='no_customer_specified'
+                        )
+                    )
 
-        # Otherwise, we are all set.
-        return True
+                cvs = self.customervoucher_set.all()
+                cgvs = self.customergroupvoucher_set.all()
+
+                if cvs.exists() and not cvs.filter(customer=customer).exists():
+                    errors.append(
+                        ValidationError(
+                            _('This voucher is associated with a specific customer.'),
+                            code='customer_invalid'
+                        )
+                    )
+                elif cgvs.exists() and not cgvs.filter(group__in=customer.groups.all()).exists():
+                    errors.append(
+                        ValidationError(
+                            _('This voucher is associated with a specific customer group.'),
+                            code='customergroup_invalid'
+                        )
+                    )
+
+            if self.forFirstTimeCustomersOnly and customer and customer.numEventRegistrations > 0:
+                errors.append(
+                    ValidationError(
+                        _('This voucher can only be used by first time customers.'),
+                        code='not_first_time_customer'
+                    )
+                )
+
+            if self.forPreviousCustomersOnly and (not customer or customer.numEventRegistrations == 0):
+                errors.append(
+                    ValidationError(
+                        _(
+                            'This voucher can only be used by existing customers.' +
+                            '  If you are an existing customer, be sure to register' +
+                            ' with the same email address that you have used previously.'
+                        ),
+                        code='not_existing_customer',
+                    )
+                )
+        elif not self.isValidForAnyCustomer:
+            warnings.append({
+                'code': 'customer_restrictions',
+                'message': _(
+                    'This voucher is associated with a specific customer or customer group.'
+                )
+            })
+
+        # If there were errors and we are supposed to raise them, then no need
+        # to proceed further.
+        if errors and raise_errors:
+            raise ValidationError(errors)
+
+        retval = {
+            'name': self.name,
+            'id': self.voucherId,
+            'status': 'valid',
+            'warnings': warnings,
+        }
+
+        if errors:
+            retval.update({
+                'status': 'invalid',
+                'errors': [{'code': x.code, 'message': ';'.join(x.messages)} for x in errors]
+            })
+        elif return_amount and retval.get('status', None) == 'valid':
+            retval['available'] = self.maxToUse
+
+        return retval
 
     def __str__(self):
         return self.name + " " + str(self.id)
@@ -189,11 +393,23 @@ class Voucher(models.Model):
     class Meta:
         verbose_name = _('Voucher')
         verbose_name_plural = _('Vouchers')
+        permissions = (
+            (
+                'generate_and_email_vouchers',
+                _('Can generate and email vouchers using the quick voucher email view.')
+            ),
+        )
 
 
 class VoucherReferralDiscount(models.Model):
-    referrerVoucher = models.ForeignKey(Voucher,related_name="VoucherReferralDiscountForReferrer",verbose_name=_('Referrer voucher'))
-    referreeVoucher = models.ForeignKey(Voucher,related_name="voucherreferralDiscountForReferree",verbose_name=_('Referree voucher'))
+    referrerVoucher = models.ForeignKey(
+        Voucher, related_name="VoucherReferralDiscountForReferrer",
+        verbose_name=_('Referrer voucher'), on_delete=models.CASCADE,
+    )
+    referreeVoucher = models.ForeignKey(
+        Voucher, related_name="voucherreferralDiscountForReferree",
+        verbose_name=_('Referree voucher'), on_delete=models.CASCADE
+    )
     referrerBonus = models.FloatField(_('Amount awarded to referrer'))
 
     class Meta:
@@ -202,11 +418,16 @@ class VoucherReferralDiscount(models.Model):
 
 
 class VoucherUse(models.Model):
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
-    registration = models.ForeignKey(Registration,null=True,verbose_name=_('Registration'))
-    amount = models.FloatField(_('Amount'),validators=[MinValueValidator(0)])
-    notes = models.CharField(_('Notes'),max_length=100,null=True,blank=True)
-    creationDate = models.DateTimeField(_('Date of use'),auto_now_add=True,null=True)
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE,
+    )
+    registration = models.ForeignKey(
+        Registration, null=True, verbose_name=_('Registration'),
+        on_delete=models.SET_NULL,
+    )
+    amount = models.FloatField(_('Amount'), validators=[MinValueValidator(0)])
+    notes = models.CharField(_('Notes'), max_length=100, null=True, blank=True)
+    creationDate = models.DateTimeField(_('Date of use'), auto_now_add=True, null=True)
 
     class Meta:
         verbose_name = _('Voucher use')
@@ -214,8 +435,13 @@ class VoucherUse(models.Model):
 
 
 class DanceTypeVoucher(models.Model):
-    danceTypeLevel = models.ForeignKey(DanceTypeLevel,verbose_name=_('Dance Type/Level'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    danceTypeLevel = models.ForeignKey(
+        DanceTypeLevel, verbose_name=_('Dance Type/Level'),
+        on_delete=models.CASCADE,
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE,
+    )
 
     class Meta:
         verbose_name = _('Dance type/level voucher restriction')
@@ -223,8 +449,12 @@ class DanceTypeVoucher(models.Model):
 
 
 class ClassVoucher(models.Model):
-    classDescription = models.ForeignKey(ClassDescription,verbose_name=_('Class Type (Description)'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    classDescription = models.ForeignKey(
+        ClassDescription, verbose_name=_('Class Type (Description)'), on_delete=models.CASCADE,
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE,
+    )
 
     class Meta:
         verbose_name = _('Class-specific voucher restriction')
@@ -232,8 +462,12 @@ class ClassVoucher(models.Model):
 
 
 class SeriesCategoryVoucher(models.Model):
-    seriesCategory = models.ForeignKey(SeriesCategory,verbose_name=_('Series Category'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    seriesCategory = models.ForeignKey(
+        SeriesCategory, verbose_name=_('Series Category'), on_delete=models.CASCADE
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
 
     class Meta:
         verbose_name = _('Series category-specific voucher restriction')
@@ -241,8 +475,13 @@ class SeriesCategoryVoucher(models.Model):
 
 
 class PublicEventCategoryVoucher(models.Model):
-    publicEventCategory = models.ForeignKey(PublicEventCategory,verbose_name=_('Public Event Category'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    publicEventCategory = models.ForeignKey(
+        PublicEventCategory, verbose_name=_('Public Event Category'),
+        on_delete=models.CASCADE
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
 
     class Meta:
         verbose_name = _('Public event category-specific voucher restriction')
@@ -250,8 +489,12 @@ class PublicEventCategoryVoucher(models.Model):
 
 
 class SessionVoucher(models.Model):
-    session = models.ForeignKey(EventSession,verbose_name=_('Event Session'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    session = models.ForeignKey(
+        EventSession, verbose_name=_('Event Session'), on_delete=models.CASCADE
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
 
     class Meta:
         verbose_name = _('Session-specific voucher restriction')
@@ -259,8 +502,12 @@ class SessionVoucher(models.Model):
 
 
 class CustomerGroupVoucher(models.Model):
-    group = models.ForeignKey(CustomerGroup,verbose_name=_('Customer group'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    group = models.ForeignKey(
+        CustomerGroup, verbose_name=_('Customer group'), on_delete=models.CASCADE
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
 
     class Meta:
         verbose_name = _('Group-specific voucher restriction')
@@ -268,8 +515,12 @@ class CustomerGroupVoucher(models.Model):
 
 
 class CustomerVoucher(models.Model):
-    customer = models.ForeignKey(Customer,verbose_name=_('Customer'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
+    customer = models.ForeignKey(
+        Customer, verbose_name=_('Customer'), on_delete=models.CASCADE
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
 
     class Meta:
         verbose_name = _('Customer-specific voucher restriction')
@@ -277,10 +528,12 @@ class CustomerVoucher(models.Model):
 
 
 class VoucherCredit(models.Model):
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
-    amount = models.FloatField(_('Amount'),validators=[MinValueValidator(0)])
-    description = models.TextField(_('Description'),null=True, blank=True)
-    creationDate = models.DateTimeField(_('Date of credit'),auto_now_add=True,null=True)
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
+    amount = models.FloatField(_('Amount'), validators=[MinValueValidator(0)])
+    description = models.TextField(_('Description'), null=True, blank=True)
+    creationDate = models.DateTimeField(_('Date of credit'), auto_now_add=True, null=True)
 
     class Meta:
         verbose_name = _('Voucher credit')
@@ -288,10 +541,14 @@ class VoucherCredit(models.Model):
 
 
 class TemporaryVoucherUse(models.Model):
-    registration = models.ForeignKey(TemporaryRegistration,verbose_name=_('Registration'))
-    voucher = models.ForeignKey(Voucher,verbose_name=_('Voucher'))
-    amount = models.FloatField(_('Amount'),validators=[MinValueValidator(0)])
-    creationDate = models.DateTimeField(_('Date of use'),auto_now_add=True,null=True)
+    registration = models.ForeignKey(
+        TemporaryRegistration, verbose_name=_('Registration'), on_delete=models.CASCADE
+    )
+    voucher = models.ForeignKey(
+        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
+    )
+    amount = models.FloatField(_('Amount'), validators=[MinValueValidator(0)])
+    creationDate = models.DateTimeField(_('Date of use'), auto_now_add=True, null=True)
 
     class Meta:
         verbose_name = _('Tentative voucher use')
@@ -299,10 +556,17 @@ class TemporaryVoucherUse(models.Model):
 
 
 class VoucherReferralDiscountUse(models.Model):
-    voucherReferralDiscount = models.ForeignKey(VoucherReferralDiscount,verbose_name=_('Voucher referral discount'))
-    voucherUse = models.ForeignKey(VoucherUse,verbose_name=_('Voucher use'))
-    voucherCredit = models.ForeignKey(VoucherCredit,verbose_name=_('Voucher credit'))
-    creationDate = models.DateTimeField(_('Date of use'),auto_now_add=True,null=True)
+    voucherReferralDiscount = models.ForeignKey(
+        VoucherReferralDiscount, verbose_name=_('Voucher referral discount'),
+        on_delete=models.CASCADE
+    )
+    voucherUse = models.ForeignKey(
+        VoucherUse, verbose_name=_('Voucher use'), on_delete=models.CASCADE
+    )
+    voucherCredit = models.ForeignKey(
+        VoucherCredit, verbose_name=_('Voucher credit'), on_delete=models.CASCADE
+    )
+    creationDate = models.DateTimeField(_('Date of use'), auto_now_add=True, null=True)
 
     class Meta:
         verbose_name = _('Use of voucher referral discount')

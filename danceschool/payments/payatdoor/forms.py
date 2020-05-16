@@ -1,6 +1,6 @@
 from django import forms
 from django.contrib.auth.models import User
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from django.urls import reverse
 from django.db.models import Q
 from django.utils.translation import ugettext_lazy as _
@@ -15,6 +15,7 @@ import logging
 
 from danceschool.core.models import Invoice, TemporaryRegistration, Event
 from .models import PayAtDoorFormModel
+from .constants import ATTHEDOOR_PAYMENTMETHOD_CHOICES
 
 
 class CashPaymentMixin(object):
@@ -39,43 +40,48 @@ class CashPaymentMixin(object):
         invoice_id = self.data.get('invoice') or None
 
         if invoice_id:
-            invoice = Invoice.objects.get(id=invoice_id)
-        if not invoice_id or not invoice:
-            raise ValidationError(_('Invoice not found.'))
-        return invoice
+            try:
+                invoice = Invoice.objects.get(id=invoice_id)
+                return invoice
+            except ObjectDoesNotExist:
+                raise ValidationError(_('Invoice not found.'))
 
 
 class WillPayAtDoorForm(forms.Form):
-    ''' 
+    '''
     This is the form that customers fill out indicating
     that they intend to provide a cash payment at-the-door.
     When this form is submitted, the registration is allowed
     to proceed, but the invoice is not yet marked as paid.
     '''
-    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all(),required=True)
-    submissionUser = forms.ModelChoiceField(queryset=User.objects.all(),required=False)
-    instance = forms.ModelChoiceField(queryset=PayAtDoorFormModel.objects.all(),required=True)
+    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all(), required=True)
+    submissionUser = forms.ModelChoiceField(queryset=User.objects.all(), required=False)
+    instance = forms.ModelChoiceField(queryset=PayAtDoorFormModel.objects.all(), required=True)
 
     willPayAtDoor = forms.BooleanField(
         label=_('I will pay at the door'),
         required=True,
-        help_text=_('You will receive a registration confirmation email, but will be required to complete your payment at the door to finalize your registration.')
+        help_text=_(
+            'You will receive a registration confirmation email, but will be ' +
+            'required to complete your payment at the door to finalize your ' +
+            'registration.'
+        )
     )
 
-    def __init__(self,*args,**kwargs):
-        subUser = kwargs.pop('user','')
-        instance = kwargs.pop('instance',None)
-        registration = kwargs.pop('registration',None)
+    def __init__(self, *args, **kwargs):
+        subUser = kwargs.pop('user', '')
+        instance = kwargs.pop('instance', None)
+        registration = kwargs.pop('registration', None)
 
         # Invoice is not used for this form, but pop it out of kwargs to avoid issues.
-        kwargs.pop('invoice',None)
+        kwargs.pop('invoice', None)
 
         self.helper = FormHelper()
         self.helper.form_method = 'post'
         self.helper.form_tag = False  # Our template must explicitly include the <form tag>
         self.helper.form_action = reverse('doorWillPayHandler')
 
-        subUser_layout = Layout(Hidden('submissionUser',subUser)) if subUser else Layout()
+        subUser_layout = Layout(Hidden('submissionUser', subUser)) if subUser else Layout()
 
         self.helper.layout = Layout(
             HTML("""
@@ -85,18 +91,18 @@ class WillPayAtDoorForm(forms.Form):
                     </h6>
                     <div class="card-body">
                 """),
-            Hidden('registration',registration),
+            Hidden('registration', registration),
             subUser_layout,
             Hidden('instance', instance),
             'willPayAtDoor',
-            Submit('submit',_('Submit')),
+            Submit('submit', _('Submit')),
             HTML("""
                     </div>
                 </div>
             """),
         )
 
-        super(WillPayAtDoorForm,self).__init__(*args, **kwargs)
+        super(WillPayAtDoorForm, self).__init__(*args, **kwargs)
 
 
 class DoorPaymentForm(CashPaymentMixin, forms.Form):
@@ -105,10 +111,22 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
     that they received a cash payment at-the-door.
     '''
 
-    submissionUser = forms.ModelChoiceField(queryset=User.objects.filter(Q(staffmember__isnull=False) | Q(is_staff=True)),required=True)
-    invoice = forms.ModelChoiceField(queryset=Invoice.objects.all(),required=True)
-    instance = forms.ModelChoiceField(queryset=PayAtDoorFormModel.objects.all(),required=True)
+    submissionUser = forms.ModelChoiceField(
+        queryset=User.objects.filter(Q(staffmember__isnull=False) | Q(is_staff=True)),
+        required=True
+    )
+    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all())
+    invoice = forms.ModelChoiceField(queryset=Invoice.objects.all(), required=False)
 
+    amountPaid = forms.FloatField(label=_('Amount Paid'), required=True, min_value=0)
+    paymentMethod = forms.ChoiceField(
+        label=_('Payment method'),
+        required=True,
+        initial='Cash',
+        choices=ATTHEDOOR_PAYMENTMETHOD_CHOICES,
+    )
+
+    payerEmail = forms.EmailField(label=_('Payer Email Address'), required=False)
     receivedBy = forms.ModelChoiceField(
         queryset=User.objects.filter(Q(staffmember__isnull=False) | Q(is_staff=True)),
         label=_('Payment received by:'),
@@ -126,15 +144,12 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
             }
         )
     )
-    amountPaid = forms.FloatField(label=_('Amount Paid'),required=True,min_value=0)
 
-    def __init__(self,*args,**kwargs):
-        subUser = kwargs.pop('user','')
-        instance = kwargs.pop('instance',None)
-        invoiceId = kwargs.pop('invoice',None)
-
-        # Registration is not used for this form, but pop it out of kwargs to avoid issues.
-        kwargs.pop('registration',None)
+    def __init__(self, *args, **kwargs):
+        subUser = kwargs.pop('user', '')
+        invoiceId = kwargs.pop('invoice', None)
+        regId = kwargs.pop('registration', None)
+        initialAmount = kwargs.pop('initialAmount', None)
 
         self.helper = FormHelper()
         self.helper.form_method = 'post'
@@ -142,34 +157,29 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
         self.helper.form_action = reverse('doorPaymentHandler')
 
         self.helper.layout = Layout(
-            HTML("""
-                <div class="card mt-4">
-                    <h6 class="card-header" role="tab" id="door_headingOne">
-                        """ + str(_('Cash Payment')) + """
-                    </h6>
-                    <div class="card-body">
-                """),
-            Hidden('submissionUser',subUser),
-            Hidden('instance',instance),
-            Hidden('invoice',invoiceId),
-            'receivedBy',
+            Hidden('submissionUser', subUser),
+            Hidden('invoice', invoiceId),
+            Hidden('registration', regId),
             'amountPaid',
-            Submit('submit',_('Submit')),
-            HTML("""
-                    </div>
-                </div>
-            """),
+            'paymentMethod',
+            'payerEmail',
+            'receivedBy',
+            Submit('submit', _('Submit')),
         )
 
         kwargs.update(initial={
             'receivedBy': subUser,
+            'amountPaid': initialAmount
         })
 
-        super(DoorPaymentForm,self).__init__(*args, **kwargs)
+        super(DoorPaymentForm, self).__init__(*args, **kwargs)
 
     def clean_submissionUser(self):
-        user = super(DoorPaymentForm,self).clean_submissionUser()
+        user = super(DoorPaymentForm, self).clean_submissionUser()
 
         if not user.has_perm('core.accept_door_payments'):
             raise ValidationError(_('Invalid user submitted door payment.'))
         return user
+
+    class Media:
+        js = ('admin/js/vendor/jquery/jquery.min.js',)

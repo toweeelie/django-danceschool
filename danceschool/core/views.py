@@ -1,9 +1,14 @@
-from django.http import HttpResponseRedirect, Http404, HttpResponseBadRequest
+from django.http import HttpResponseRedirect, Http404, HttpResponseBadRequest, HttpResponse
 from django.shortcuts import get_object_or_404, get_list_or_404
 from django.conf import settings
+from django.core import serializers
 from django.core.exceptions import ObjectDoesNotExist
 from django.urls import reverse
-from django.views.generic import FormView, CreateView, UpdateView, DetailView, TemplateView, ListView
+from django.core.serializers.json import DjangoJSONEncoder
+from django.views.generic import (
+    FormView, CreateView, UpdateView, DetailView, TemplateView, ListView,
+    RedirectView
+)
 from django.db.models import Min, Q, Count
 from django.utils.translation import ugettext_lazy as _
 from django.utils import timezone
@@ -17,23 +22,32 @@ from django.utils import timezone
 from calendar import month_name
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+from itertools import chain
 from urllib.parse import unquote_plus, unquote
 from braces.views import UserFormKwargsMixin, PermissionRequiredMixin, LoginRequiredMixin, StaffuserRequiredMixin
 from cms.constants import RIGHT
 from cms.models import Page
 import re
 import logging
+import json
 
-from .models import (Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
-                     StaffMember, Instructor, Invoice, Customer)
-from .forms import (SubstituteReportingForm, StaffMemberBioChangeForm, RefundForm, EmailContactForm,
-                    RepeatEventForm, InvoiceNotificationForm, EventAutocompleteForm)
+from .models import (
+    Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
+    StaffMember, Instructor, Invoice, Customer, EventCheckIn
+)
+from .forms import (
+    SubstituteReportingForm, StaffMemberBioChangeForm, RefundForm, EmailContactForm,
+    RepeatEventForm, InvoiceNotificationForm, CreateInvoiceForm, EventAutocompleteForm
+)
 from .constants import getConstant, EMAIL_VALIDATION_STR, REFUND_VALIDATION_STR
-from .mixins import (EmailRecipientMixin, StaffMemberObjectMixin, FinancialContextMixin,
-                     AdminSuccessURLMixin, EventOrderMixin, SiteHistoryMixin)
-from .signals import get_customer_data
+from .mixins import (
+    EmailRecipientMixin, StaffMemberObjectMixin, FinancialContextMixin,
+    AdminSuccessURLMixin, EventOrderMixin, SiteHistoryMixin,
+    ReferralInfoMixin
+)
+from .signals import get_customer_data, get_eventregistration_data
 from .utils.requests import getIntFromGet
-from .utils.timezone import ensure_timezone
+from .utils.timezone import ensure_timezone, ensure_localtime
 
 
 # Define logger for this file
@@ -64,7 +78,7 @@ class EventRegistrationSelectView(PermissionRequiredMixin, EventOrderMixin, Form
         )
 
     def get_context_data(self, **kwargs):
-        context = super(EventRegistrationSelectView,self).get_context_data(**kwargs)
+        context = super(EventRegistrationSelectView, self).get_context_data(**kwargs)
         queryset = self.get_queryset()
         context.update({'queryset': queryset, 'object_list': queryset, 'event_list': queryset})
         return context
@@ -92,17 +106,183 @@ class EventRegistrationSummaryView(PermissionRequiredMixin, SiteHistoryMixin, De
 
         # Update the site session data so that registration processes know to send return links to
         # the view class registrations page.  set_return_page() is in SiteHistoryMixin.
-        self.set_return_page('viewregistrations',_('View Registrations'),event_id=self.object.id)
+        self.set_return_page('viewregistrations', _('View Registrations'), event_id=self.object.id)
+
+        registrations = EventRegistration.objects.filter(
+            event=self.object, cancelled=False
+        ).select_related(
+            'registration', 'event', 'customer',
+            'invoiceitem', 'role', 'registration__invoice',
+        ).order_by('registration__firstName', 'registration__lastName')
+
+        extras_dict = {x: [] for x in registrations.values_list('id', flat=True)}
+
+        if registrations:
+            extras = get_eventregistration_data.send(
+                sender=EventRegistrationSummaryView, eventregistrations=registrations
+            )
+            for k, v in chain.from_iterable([x.items() for x in [y[1] for y in extras if y[1]]]):
+                extras_dict[k].extend(v)
 
         context = {
             'event': self.object,
-            'registrations': EventRegistration.objects.filter(
-                event=self.object,
-                cancelled=False
-            ).order_by('registration__customer__user__first_name', 'registration__customer__user__last_name'),
+            'registrations': registrations,
+            'extras': extras_dict,
         }
         context.update(kwargs)
         return super(EventRegistrationSummaryView, self).get_context_data(**context)
+
+
+class EventRegistrationJsonView(PermissionRequiredMixin, ListView):
+    '''
+    This view is used to access a list of event registrations for a particular date.
+    '''
+    permission_required = 'core.view_registration_summary'
+
+    def post(self, request, *args, **kwargs):
+        ''' Parse the date and customer information that is passed. '''
+
+        def recurse_listing(listing, obj, extras=None, startTime=None, checkInType='O'):
+            '''
+            Recursively go through a list of model attributes, including attributes that
+            are of linked models.
+            '''
+
+            this_dict = {}
+            if not isinstance(listing, list):
+                raise ValueError('Invalid listing for recursion.')
+
+            for item in listing:
+                if isinstance(item, str):
+                    # Handle a couple of special cases
+                    if item == 'checkedIn':
+                        kwargs = {'checkInType': checkInType}
+                        if isinstance(startTime, datetime):
+                            kwargs['date'] = startTime.date()
+                        this_dict[item] = getattr(obj, item, None)(**kwargs)
+                    elif item == 'getNextOccurrenceForDate':
+                        # This view always uses the beginning of the current day
+                        # when searching for the next EventOccurrence, to avoid
+                        # unexpected behavior when using it for at-the-door
+                        # registration.
+                        this_dict[item] = getattr(
+                            getattr(obj, item, None)(startTime),
+                            'id', None
+                        )
+                    else:
+                        this_dict[item] = getattr(obj, item, None)
+
+                elif isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+                    this_item = getattr(obj, item[0], None)
+
+                    # Added because of issues with polymorphic queries; we need
+                    # to ensure we have the child model.
+                    if item[0] == 'event':
+                        this_item = getattr(
+                            this_item, this_item.polymorphic_ctype.model, None
+                        )
+
+                    this_dict[item[0]] = recurse_listing(
+                        item[1], this_item, startTime=startTime,
+                        checkInType=checkInType
+                    )
+
+            if (
+                isinstance(obj, EventRegistration) and
+                extras_dict is not None and
+                extras_dict.get(obj.id, None)
+            ):
+                this_dict['extras'] = extras_dict[obj.id]
+
+            return this_dict
+
+        try:
+            post_data = json.loads(self.request.body)
+        except json.decoder.JSONDecodeError:
+            data = json.dumps(
+                {'code': 'invalid_json', 'message': _('Invalid JSON.')},
+                cls=DjangoJSONEncoder
+            )
+            return HttpResponse(data, content_type='application/json')
+
+        if post_data.get('date', None):
+            try:
+                self.startTime = ensure_localtime(datetime.strptime(post_data.get('date', ''), '%Y-%m-%d'))
+                self.endTime = self.startTime + timedelta(days=1)
+            except ValueError:
+                logger.warning('Invalid date passed to EventRegistrationJsonView.')
+
+        if post_data.get('id', None):
+            try:
+                self.customer = Customer.objects.get(id=post_data.get('id'))
+            except ObjectDoesNotExist:
+                logger.warning('Invalid customer passed to EventRegistrationJsonView.')
+
+        # Only set the attribute if passed, but the downstream uses of this
+        # attribute default to occurrence-based check-in unless otherwise
+        # specified. Ignore invalid choices.
+        if (
+            post_data.get('checkInType', None) in
+            [x[0] for x in EventCheckIn.CHECKIN_TYPE_CHOICES]
+        ):
+            self.checkInType = post_data.get('checkInType')
+
+        queryset = self.get_queryset()
+
+        if post_data.get('eventList'):
+            queryset = queryset.filter(event__id__in=post_data.get('eventList'))
+
+        # These are all the various attributes that we want to be populated in the response JSON
+        attributeList = [
+            'id', 'dropIn', 'price', 'netPrice', 'refundFlag', 'warningFlag',
+            'checkedIn',
+            ('event', ['id', 'name', 'url', 'getNextOccurrenceForDate']),
+            ('registration', [
+                'id', 'priceWithDiscount', 'student', 'refundFlag', 'totalPrice',
+                'fullName', 'discounted', 'url',
+                ('customer', ['id', 'fullName', 'email', 'numClassSeries']),
+                ('invoice', ['id', 'adjustments', 'outstandingBalance', 'statusLabel', 'url']),
+            ]),
+            ('invoiceitem', [
+                'id', 'adjustments', 'revenueMismatch', 'revenueNotYetReceived',
+                'revenueReceived', 'revenueReported'
+            ]),
+            ('role', ['id', 'name']),
+        ]
+
+        extras = get_eventregistration_data.send(sender=EventRegistrationJsonView, eventregistrations=queryset)
+        extras_dict = {x: [] for x in queryset.values_list('id', flat=True)}
+        for k, v in chain.from_iterable([x.items() for x in [y[1] for y in extras if isinstance(y[1], dict)]]):
+            extras_dict[k].extend(v)
+
+        this_listing = [
+            recurse_listing(
+                attributeList, q, extras=extras_dict,
+                startTime=getattr(self, 'startTime', None),
+                checkInType=getattr(self, 'checkInType', 'O')
+            )
+            for q in queryset
+        ]
+
+        data = json.dumps(this_listing, cls=DjangoJSONEncoder)
+        return HttpResponse(data, content_type='application/json')
+
+    def get_queryset(self):
+        filters = {'cancelled': False}
+        if getattr(self, 'startTime', None):
+            filters['event__eventoccurrence__endTime__gte'] = self.startTime
+        if getattr(self, 'endTime', None):
+            filters['event__eventoccurrence__startTime__lte'] = self.endTime
+        if getattr(self, 'customer', None):
+            filters['customer'] = self.customer
+
+        registrations = EventRegistration.objects.filter(
+            **filters
+        ).distinct().select_related(
+            'registration', 'event', 'customer',
+            'invoiceitem', 'role', 'registration__invoice',
+        ).order_by('registration__firstName', 'registration__lastName')
+        return registrations
 
 
 #################################
@@ -123,7 +303,7 @@ class SubmissionRedirectView(SiteHistoryMixin, TemplateView):
 
         redirect_url = unquote(self.request.GET.get('redirect_url', ''))
         if not redirect_url:
-            redirect_url = self.get_return_page().get('url','')
+            redirect_url = self.get_return_page().get('url', '')
         if not redirect_url:
             try:
                 redirect_url = Page.objects.get(
@@ -152,10 +332,19 @@ class ViewInvoiceView(AccessMixin, FinancialContextMixin, SiteHistoryMixin, Deta
         Invoices can be viewed only if the validation string is provided, unless
         the user is logged in and has view_all_invoice permissions
         '''
-        user_has_validation_string = self.get_object().validationString
+        self.object = self.get_object()
         user_has_permissions = request.user.has_perm('core.view_all_invoices')
-        if request.GET.get('v', None) == user_has_validation_string or user_has_permissions:
-            return super(ViewInvoiceView, self).get(request, *args, **kwargs)
+        user_has_validation_string = (
+            request.GET.get('v', None) == self.object.validationString
+        )
+
+        if user_has_validation_string or user_has_permissions:
+            context = self.get_context_data(
+                object=self.object,
+                user_has_permissions=user_has_permissions,
+                user_has_validation_string=user_has_validation_string
+            )
+            return self.render_to_response(context)
         return self.handle_no_permission()
 
     def get_context_data(self, **kwargs):
@@ -166,7 +355,7 @@ class ViewInvoiceView(AccessMixin, FinancialContextMixin, SiteHistoryMixin, Deta
         })
 
         # Update the session data so that subsequent views return to this page.
-        self.set_return_page('viewInvoice',_('Invoice'),pk=str(self.object.pk))
+        self.set_return_page('viewInvoice', _('Invoice'), pk=str(self.object.pk))
 
         return context
 
@@ -209,7 +398,7 @@ class InvoiceNotificationView(FinancialContextMixin, AdminSuccessURLMixin,
         else:
             ids = request.GET.get('invoices', '')
             try:
-                self.invoices = Invoice.objects.filter(id__in=[x for x in ids.split(',')])[:]
+                self.invoices = Invoice.objects.filter(id__in=[x for x in ids.split(', ')])[:]
             except ValueError:
                 return HttpResponseBadRequest(_('Invalid invoice identifiers specified.'))
 
@@ -242,6 +431,35 @@ class InvoiceNotificationView(FinancialContextMixin, AdminSuccessURLMixin,
             'cannotNotify': self.cannotNotify,
         })
         return context
+
+
+class CreateInvoiceView(UserFormKwargsMixin, FormView):
+    form_class = CreateInvoiceForm
+
+    def form_valid(self, form):
+        regSession = self.request.session[REG_VALIDATION_STR]
+        reg_id = regSession["temp_reg_id"]
+        tr = TemporaryRegistration.objects.get(id=reg_id)
+
+        # Create a new Invoice if one does not already exist.
+        new_invoice = Invoice.get_or_create_from_registration(tr)
+
+        if form.cleaned_data.get('invoiceSent'):
+            # Do not finalize this registration, but set the expiration date
+            # on the TemporaryRegistration such that it will not be deleted
+            # until after the last series ends, in case this person does not make
+            # a payment right away.  This will also hold this individual's spot
+            # in anything for which they have registered indefinitely.
+            payerEmail = form.cleaned_data['invoicePayerEmail']
+            tr.expirationDate = tr.lastEndTime
+            tr.save()
+            new_invoice.sendNotification(payerEmail=payerEmail, newRegistration=True)
+
+        return HttpResponseRedirect(reverse('registration'))
+
+    def form_invalid(self, form):
+        ''' TODO: Figure out better handling for this case. '''
+        return HttpResponseBadRequest()
 
 
 #################################
@@ -597,9 +815,9 @@ class SendEmailView(PermissionRequiredMixin, UserFormKwargsMixin, FormView):
             filters = Q(id__isnull=True)
 
             if ids:
-                filters = filters | Q(id__in=[int(x) for x in ids.split(',')])
+                filters = filters | Q(id__in=[int(x) for x in ids.split(', ')])
             if groups:
-                filters = filters | Q(groups__id__in=[int(x) for x in groups.split(',')])
+                filters = filters | Q(groups__id__in=[int(x) for x in groups.split(', ')])
 
             try:
                 self.customers = Customer.objects.filter(filters)
@@ -858,7 +1076,41 @@ class OtherInstructorStatsView(InstructorStatsView):
 # Individual Class Series/Event Views
 
 
-class IndividualClassView(FinancialContextMixin, TemplateView):
+class IndividualClassReferralView(ReferralInfoMixin, RedirectView):
+
+    def get_redirect_url(self, *args, **kwargs):
+        if (
+            self.kwargs.get('session_slug', None) and
+            self.kwargs.get('year', None) and
+            self.kwargs.get('month', None)
+        ):
+            return reverse('classViewSessionMonth', kwargs=kwargs)
+        elif (
+            self.kwargs.get('session_slug', None)
+        ):
+            return reverse('classViewSession', kwargs=kwargs)
+        else:
+            return reverse('classView', kwargs=kwargs)
+
+
+class IndividualEventReferralView(ReferralInfoMixin, RedirectView):
+
+    def get_redirect_url(self, *args, **kwargs):
+        if (
+            self.kwargs.get('session_slug', None) and
+            self.kwargs.get('year', None) and
+            self.kwargs.get('month', None)
+        ):
+            return reverse('eventViewSessionMonth', kwargs=kwargs)
+        elif (
+            self.kwargs.get('session_slug', None)
+        ):
+            return reverse('eventViewSession', kwargs=kwargs)
+        else:
+            return reverse('eventView', kwargs=kwargs)
+
+
+class IndividualClassView(ReferralInfoMixin, FinancialContextMixin, TemplateView):
     template_name = 'core/individual_class.html'
 
     def get(self, request, *args, **kwargs):
@@ -899,7 +1151,7 @@ class IndividualClassView(FinancialContextMixin, TemplateView):
         return super(IndividualClassView, self).get(request, *args, **kwargs)
 
 
-class IndividualEventView(FinancialContextMixin, TemplateView):
+class IndividualEventView(ReferralInfoMixin, FinancialContextMixin, TemplateView):
     template_name = 'core/individual_event.html'
 
     def get(self, request, *args, **kwargs):
@@ -971,7 +1223,7 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
             return HttpResponseBadRequest(_('Invalid content type passed.'))
 
         try:
-            self.queryset = self.objectClass.objects.filter(id__in=[int(x) for x in ids.split(',')])
+            self.queryset = self.objectClass.objects.filter(id__in=[int(x) for x in ids.split(', ')])
         except ValueError:
             return HttpResponseBadRequest(_('Invalid ids passed'))
 

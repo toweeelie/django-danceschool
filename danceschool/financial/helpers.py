@@ -89,7 +89,7 @@ def getRevenueItemsCSV(queryset):
         _('Gross Total (Pre-Discounts & Vouchers)'),
         _('Net Total'),
         _('Received From'),
-        _('Registration'),
+        _('Invoice ID'),
         _('Event'),
         _('Received'),
         _('Received Date')
@@ -101,14 +101,9 @@ def getRevenueItemsCSV(queryset):
             x.description,
             x.category.name,
             x.grossTotal,
-            x.total
-        ]
-        if x.registration:
-            this_row_data.append(x.registration.fullName)
-        else:
-            this_row_data.append(x.receivedFrom.name)
-        this_row_data += [
-            x.registration,
+            x.total,
+            getattr(x.receivedFrom, 'name', None),
+            getattr(getattr(x.invoiceItem, 'invoice', None), 'id', None),
             x.event,
             x.received,
             x.receivedDate
@@ -226,7 +221,7 @@ def createExpenseItemsForVenueRental(request=None, datetimeTuple=None, rule=None
                 replacements['name'] = this_event.name
                 replacements['dates'] = this_event.localStartTime.strftime('%Y-%m-%d')
                 if (
-                        event.localStartTime.strftime('%Y-%m-%d') != \
+                        event.localStartTime.strftime('%Y-%m-%d') !=
                         this_event.localEndTime.strftime('%Y-%m-%d')
                 ):
                     replacements['dates'] += ' %s %s' % (
@@ -238,8 +233,10 @@ def createExpenseItemsForVenueRental(request=None, datetimeTuple=None, rule=None
                     category=rental_category,
                     payTo=loc_party,
                     expenseRule=rule,
-                    description='%(type)s %(of)s %(location)s %(for)s: %(name)s, %(dates)s' % \
-                        replacements,
+                    description=(
+                        '%(type)s %(of)s %(location)s %(for)s: %(name)s, %(dates)s' %
+                        replacements
+                    ),
                     submissionUser=submissionUser,
                     total=this_event.duration * rule.rentalRate,
                     accrualDate=this_event.startTime,
@@ -253,8 +250,8 @@ def createExpenseItemsForVenueRental(request=None, datetimeTuple=None, rule=None
             # now show up multiple times). So, we just need to construct the set
             # of intervals for which to construct expenses
             intervals = [
-                (x.localStartTime, x.localEndTime) for x in \
-                    EventOccurrence.objects.filter(event__in=events)
+                (x.localStartTime, x.localEndTime) for x in
+                EventOccurrence.objects.filter(event__in=events)
             ]
             remaining_intervals = rule.getWindowsAndTotals(intervals)
 
@@ -422,13 +419,13 @@ def createExpenseItemsForEvents(request=None, datetimeTuple=None, rule=None, eve
                 # Item generate under this rule.
                 replacements['event'] = staffer.event.name
                 replacements['name'] = staffer.staffMember.fullName
-                replacements['dates'] = staffer.event.startTime.strftime('%Y-%m-%d')
+                replacements['dates'] = staffer.event.localStartTime.strftime('%Y-%m-%d')
                 if (
-                        staffer.event.startTime.strftime('%Y-%m-%d') !=
-                        staffer.event.endTime.strftime('%Y-%m-%d')
+                        staffer.event.localStartTime.strftime('%Y-%m-%d') !=
+                        staffer.event.localEndTime.strftime('%Y-%m-%d')
                 ):
                     replacements['dates'] += ' %s %s' % (
-                        _('to'), staffer.event.endTime.strftime('%Y-%m-%d')
+                        _('to'), staffer.event.localEndTime.strftime('%Y-%m-%d')
                     )
 
                 # Find or create the TransactionParty associated with the staff member.
@@ -444,8 +441,7 @@ def createExpenseItemsForEvents(request=None, datetimeTuple=None, rule=None, eve
                     'event': staffer.event,
                     'category': expense_category,
                     'expenseRule': rule,
-                    'description': '%(type)s %(to)s %(name)s %(for)s: %(event)s, %(dates)s' % \
-                        replacements,
+                    'description': '%(type)s %(to)s %(name)s %(for)s: %(event)s, %(dates)s' % replacements,
                     'submissionUser': submissionUser,
                     'hours': staffer.netHours,
                     'wageRate': rule.rentalRate,
@@ -597,6 +593,8 @@ def createGenericExpenseItems(request=None, datetimeTuple=None, rule=None):
                 'total': rule.rentalRate,
                 'accrualDate': this_time,
                 'payTo': rule.payTo,
+                'approved': str(_('Approved')) if rule.markApproved else None,
+                'paid': rule.markPaid,
             }
             item, created = ExpenseItem.objects.get_or_create(
                 expenseRule=rule,
@@ -627,7 +625,7 @@ def createRevenueItemsForRegistrations(request=None, datetimeTuple=None):
 
     this_category = getConstant('financial__registrationsRevenueCat')
 
-    filters_events = {'revenueitem__isnull': True,'finalEventRegistration__isnull': False}
+    filters_events = {'revenueitem__isnull': True, 'finalEventRegistration__isnull': False}
 
     if datetimeTuple:
         timelist = list(datetimeTuple)
@@ -681,13 +679,19 @@ def prepareFinancialStatement(year=None):
         RevenueItem.objects.filter(accrualDate__year=filter_year).aggregate(Sum('total')).values()
     )[0]
     expenses_awaiting_approval = list(
-        ExpenseItem.objects.filter(approved=False, paid=False).aggregate(Sum('total')).values()
+        ExpenseItem.objects.filter(
+            Q(paid=False) & (Q(approved__isnull=True) | Q(approved__exact=''))
+        ).aggregate(Sum('total')).values()
     )[0]
     expenses_awaiting_payment = list(
-        ExpenseItem.objects.filter(approved=True, paid=False).aggregate(Sum('total')).values()
+        ExpenseItem.objects.filter(
+            Q(paid=False) & ~(Q(approved__isnull=True) | Q(approved__exact=''))
+        ).aggregate(Sum('total')).values()
     )[0]
     expenses_paid_notapproved = list(
-        ExpenseItem.objects.filter(approved=False, paid=True).aggregate(Sum('total')).values()
+        ExpenseItem.objects.filter(
+            Q(paid=True) & (Q(approved__isnull=True) | Q(approved__exact=''))
+        ).aggregate(Sum('total')).values()
     )[0]
 
     return {
@@ -722,11 +726,11 @@ def prepareStatementByPeriod(**kwargs):
     # values, annotations, and order_by are used repeatedly for constructing
     # queries.
     period_type = kwargs.get('type', 'month')
-    values = ('basisDate',)
-    order_by = ('-basisDate',)
+    values = ('basisDate', )
+    order_by = ('-basisDate', )
 
-    def date_for_month(*args,**kwargs):
-        return TruncDate(TruncMonth(*args,**kwargs))
+    def date_for_month(*args, **kwargs):
+        return TruncDate(TruncMonth(*args, **kwargs))
 
     # NOTE: Django 2.1 introduces "TruncWeek", which should be added to the
     # options once the project requires Django 2.1.
@@ -848,11 +852,11 @@ def prepareStatementByPeriod(**kwargs):
             '''
             Convenience function to calculate net value incorporating adjustments and fees.
             '''
-            if not isinstance(this_dict,dict):
+            if not isinstance(this_dict, dict):
                 this_dict = {}
-            return this_dict.get('total__sum',0) + \
-                this_dict.get('adjustments__sum',0) - \
-                this_dict.get('fees__sum',0)
+            return this_dict.get('total__sum', 0) + \
+                this_dict.get('adjustments__sum', 0) - \
+                this_dict.get('fees__sum', 0)
 
         thisPeriodStatement['revenues'] = get_net(
             totalRevenuesByPeriod.filter(basisDate=this_period).first()
@@ -874,7 +878,7 @@ def prepareStatementByPeriod(**kwargs):
 
         thisPeriodStatement['registrations'] = (
             registrationsByPeriod.filter(basisDate=this_period).first() or {}
-        ).get('count',0)
+        ).get('count', 0)
         thisPeriodStatement['net_profit'] = (
             thisPeriodStatement['revenues'] - thisPeriodStatement['expenses']['total']
         )
@@ -931,7 +935,7 @@ def prepareStatementByEvent(**kwargs):
         else:
             this_event_statement['month_name'] = _('Unspecified Month')
         this_event_statement['event_name'] = event.name
-        this_event_statement['registrations'] = {'total': event.numRegistered,}
+        this_event_statement['registrations'] = {'total': event.numRegistered, }
         this_event_statement['registrations'].update(event.numRegisteredByRole)
 
         # The calculation of net vs. gross revenue for each registration item is

@@ -2,11 +2,12 @@ from django.contrib.auth.models import User
 from django.utils.encoding import force_text
 from django.utils.html import format_html
 from django.db.models import Q
+from django.utils.translation import ugettext_lazy as _
 
 from dal import autocomplete
 from calendar import month_name
 
-from .models import Customer, StaffMember, Series, PublicEvent, Event
+from .models import Customer, StaffMember, Series, PublicEvent, Event, ClassDescription
 
 
 class UserAutoComplete(autocomplete.Select2QuerySetView):
@@ -56,6 +57,32 @@ class CustomerAutoComplete(autocomplete.Select2QuerySetView):
         return qs
 
 
+class ClassDescriptionAutoComplete(autocomplete.Select2QuerySetView):
+
+    def get_queryset(self):
+        # Filter out results for unauthenticated users.
+        if not self.request.user.has_perm('core.change_series'):
+            return ClassDescription.objects.none()
+
+        qs = ClassDescription.objects.all()
+
+        if self.q:
+            qs = qs.filter(
+                Q(title__icontains=self.q) | Q(shortDescription__icontains=self.q) |
+                Q(description__icontains=self.q)
+            )
+
+        return qs
+
+    def get_result_label(self, result):
+        if not result.lastOffered:
+            return result.title
+        return format_html(
+            '{} ({} {})',
+            result.title, _('Last offered'), result.lastOffered.strftime('%Y-%m-%d')
+        )
+
+
 class EventAutoComplete(autocomplete.Select2QuerySetView):
     '''
     Allow the user to filter autocomplates on the name of the series/event and
@@ -73,13 +100,16 @@ class EventAutoComplete(autocomplete.Select2QuerySetView):
 
         if self.q:
             try:
-                month_dict = {v: k for k,v in enumerate(month_name)}
-                month_value = next(value for key, value in month_dict.items() if key.startswith(self.q.title()))
+                month_dict = {v: k for k, v in enumerate(month_name)}
+                month_value = next(
+                    value for key, value in month_dict.items() if
+                    key.startswith(self.q.title())
+                )
             except StopIteration:
-                month_value = ''
+                month_value = 0
 
             qs = qs.filter(
-                Q(series__classDescription__title__icontains=self.q) | 
+                Q(series__classDescription__title__icontains=self.q) |
                 Q(publicevent__title__icontains=self.q) |
                 Q(year__icontains=self.q) |
                 Q(month__icontains=month_value)
@@ -129,4 +159,4 @@ class StaffMemberAutoComplete(autocomplete.Select2QuerySetView):
             lastName = ' '.join(text.split(' ')[1:])
             return self.get_queryset().create(**{'firstName': firstName, 'lastName': lastName})
         else:
-            return super(StaffMemberAutoComplete,self).create_object(text)
+            return super(StaffMemberAutoComplete, self).create_object(text)

@@ -1,5 +1,6 @@
 from django.dispatch import receiver
-from django.db.models import Q
+from django.db.models import Q, Value, CharField, F
+from django.db.models.query import QuerySet
 from django.db.models.signals import post_save, m2m_changed
 from django.utils.translation import ugettext_lazy as _
 from django.contrib.auth.models import User
@@ -7,8 +8,12 @@ from django.contrib.auth.models import User
 import sys
 import logging
 
-from danceschool.core.models import EventStaffMember, EventOccurrence, InvoiceItem, Invoice, StaffMember, Location
+from danceschool.core.models import (
+    EventStaffMember, EventOccurrence, InvoiceItem, Invoice, StaffMember,
+    Location, EventRegistration
+)
 from danceschool.core.constants import getConstant
+from danceschool.core.signals import get_eventregistration_data
 
 from .models import ExpenseItem, RevenueItem, RepeatedExpenseRule
 
@@ -18,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 @receiver(m2m_changed, sender=EventStaffMember.occurrences.through)
-def modifyExistingExpenseItemsForEventStaff(sender,instance,**kwargs):
+def modifyExistingExpenseItemsForEventStaff(sender, instance, **kwargs):
     if 'loaddata' in sys.argv or ('raw' in kwargs and kwargs['raw']):
         return
-    if kwargs.get('action',None) != 'post_add':
+    if kwargs.get('action', None) != 'post_add':
         return
 
     logger.debug('ExpenseItem signal fired for EventStaffMember %s.' % instance.pk)
@@ -40,10 +45,10 @@ def modifyExistingExpenseItemsForEventStaff(sender,instance,**kwargs):
             logger.debug('Updating expense item %s.' % expense.id)
             expense.hours = instance.netHours
             expense.total = expense.hours * expense.wageRate
-            expense.approved = False
+            expense.approved = None
             expense.save()
 
-    if hasattr(instance.replacedStaffMember,'staffMember'):
+    if hasattr(instance.replacedStaffMember, 'staffMember'):
         logger.debug('Adjusting totals for replaced event staff member.')
         replaced_expenses = ExpenseItem.objects.filter(
             event=instance.event,
@@ -57,12 +62,12 @@ def modifyExistingExpenseItemsForEventStaff(sender,instance,**kwargs):
             logger.debug('Updating expense item %s' % expense.id)
             expense.hours = instance.replacedStaffMember.netHours
             expense.total = expense.hours * expense.wageRate
-            expense.approved = False
+            expense.approved = None
             expense.save()
 
 
 @receiver(post_save, sender=EventOccurrence)
-def modifyExistingExpenseItemsForSeriesClass(sender,instance,**kwargs):
+def modifyExistingExpenseItemsForSeriesClass(sender, instance, **kwargs):
     if 'loaddata' in sys.argv or ('raw' in kwargs and kwargs['raw']):
         return
 
@@ -90,12 +95,12 @@ def modifyExistingExpenseItemsForSeriesClass(sender,instance,**kwargs):
             esm = eventstaffmembers.first()
             expense.hours = esm.netHours
             expense.total = expense.hours * expense.wageRate
-            expense.approved = False
+            expense.approved = None
             expense.save()
 
 
 @receiver(post_save, sender=InvoiceItem)
-def createRevenueItemForInvoiceItem(sender,instance,**kwargs):
+def createRevenueItemForInvoiceItem(sender, instance, **kwargs):
     if 'loaddata' in sys.argv or ('raw' in kwargs and kwargs['raw']):
         return
 
@@ -126,13 +131,13 @@ def createRevenueItemForInvoiceItem(sender,instance,**kwargs):
         # Check that the existing revenueItem is still correct
         saveFlag = False
 
-        for field in ['grossTotal','total','adjustments','fees','taxes']:
-            if getattr(related_item,field) != getattr(instance,field):
-                setattr(related_item,field,getattr(instance,field))
+        for field in ['grossTotal', 'total', 'adjustments', 'fees', 'taxes']:
+            if getattr(related_item, field) != getattr(instance, field):
+                setattr(related_item, field, getattr(instance, field))
                 saveFlag = True
-        for field in ['buyerPaysSalesTax',]:
-            if getattr(related_item,field) != getattr(instance.invoice,field):
-                setattr(related_item,field,getattr(instance.invoice,field))
+        for field in ['buyerPaysSalesTax', ]:
+            if getattr(related_item, field) != getattr(instance.invoice, field):
+                setattr(related_item, field, getattr(instance.invoice, field))
                 saveFlag = True
 
         if related_item.received != received_status:
@@ -148,7 +153,7 @@ def createRevenueItemForInvoiceItem(sender,instance,**kwargs):
 @receiver(post_save, sender=User)
 @receiver(post_save, sender=StaffMember)
 @receiver(post_save, sender=Location)
-def updateTransactionParty(sender,instance,**kwargs):
+def updateTransactionParty(sender, instance, **kwargs):
     '''
     If a User, StaffMember, or Location is updated, and there exists an associated
     TransactionParty, then the name and other attributes of that party should be updated
@@ -160,6 +165,31 @@ def updateTransactionParty(sender,instance,**kwargs):
 
     logger.debug('TransactionParty signal fired for %s %s.' % (instance.__class__.__name__, instance.id))
 
-    party = getattr(instance,'transactionparty',None)
+    party = getattr(instance, 'transactionparty', None)
     if party:
         party.save(updateBy=instance)
+
+
+@receiver(get_eventregistration_data)
+def reportRevenue(sender, **kwargs):
+
+    logger.debug('Signal fired to return revenue items associated with registrations')
+
+    regs = kwargs.pop('eventregistrations', None)
+    if not regs or not isinstance(regs, QuerySet) or not (regs.model == EventRegistration):
+        logger.warning('No/invalid EventRegistration queryset passed, so revenue items not found.')
+        return
+
+    extras = {}
+    regs = regs.filter(invoiceitem__revenueitem__isnull=False).select_related(
+        'invoiceitem__revenueitem'
+    )
+
+    for reg in regs:
+        extras[reg.id] = [{
+            'id': reg.invoiceitem.revenueitem.id,
+            'name': reg.invoiceitem.revenueitem.description,
+            'type': 'revenueitem',
+            'amount': reg.invoiceitem.revenueitem.total,
+        }, ]
+    return extras

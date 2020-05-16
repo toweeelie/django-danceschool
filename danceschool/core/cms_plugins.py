@@ -1,5 +1,7 @@
 from django.utils.translation import ugettext_lazy as _
 from django.utils import timezone
+from django.middleware.csrf import get_token
+
 
 from cms.plugin_base import CMSPluginBase
 from cms.plugin_pool import plugin_pool
@@ -7,9 +9,14 @@ from cms.models.pluginmodel import CMSPlugin
 
 from datetime import datetime, timedelta
 
-from .models import StaffMemberListPluginModel, LocationPluginModel, LocationListPluginModel, EventListPluginModel, StaffMember, Event, Series, PublicEvent, Location
+from .models import (
+    StaffMemberListPluginModel, LocationPluginModel, LocationListPluginModel,
+    EventListPluginModel, StaffMember, Instructor, Event, Series, PublicEvent,
+    Location
+)
 from .mixins import PluginTemplateMixin
 from .registries import plugin_templates_registry, PluginTemplateBase
+from .forms import CreateInvoiceForm
 
 
 class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
@@ -20,7 +27,7 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
     module = _('Staff')
 
     def render(self, context, instance, placeholder):
-        context = super(StaffMemberListPlugin,self).render(context,instance,placeholder)
+        context = super(StaffMemberListPlugin, self).render(context, instance, placeholder)
 
         listing = StaffMember.objects.all().translated('en').distinct()
 
@@ -42,25 +49,27 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
             listing = listing.filter(eventstaffmember__event__endTime__gte=timezone.now()).distinct()
 
         if instance.orderChoice == 'firstName':
-            listing = listing.order_by('translations__firstName','translations__lastName')
+            listing = listing.order_by('translations__firstName', 'translations__lastName')
         elif instance.orderChoice == 'status':
-            listing = listing.order_by('instructor__status','translations__firstName','translations__lastName')
+            listing = listing.order_by('instructor__status', 'translations__firstName', 'translations__lastName')
         elif instance.orderChoice == 'manual':
-            listing = listing.order_by('instructor__order','instructor__status','translations__firstName','translations__lastName')
+            listing = listing.order_by('instructor__order', 'instructor__status', 'translations__firstName', 'translations__lastName')
         elif instance.orderChoice == 'random':
             listing = listing.order_by('?')
         else:
-            listing = listing.order_by('translations__lastName','translations__firstName')
+            listing = listing.order_by('translations__lastName', 'translations__firstName')
 
         context.update({
             'list_title': instance.title,
-            'instructor_list': listing, # DEPRECATED
+            'instructor_list': listing,  # DEPRECATED
             'staffmember_list': listing,
             'thumbnail': instance.imageThumbnail,
         })
 
         if instance.imageThumbnail:
-            context['thumbnail_dimensions'] = '%sx%s' % (instance.imageThumbnail.width, instance.imageThumbnail.height)
+            context['thumbnail_dimensions'] = '%sx%s' % (
+                instance.imageThumbnail.width, instance.imageThumbnail.height
+            )
         return context
 
 
@@ -72,7 +81,7 @@ class LocationListPlugin(PluginTemplateMixin, CMSPluginBase):
 
     def render(self, context, instance, placeholder):
         ''' Allows this plugin to use templates designed for a list of locations. '''
-        context = super(LocationListPlugin,self).render(context,instance,placeholder)
+        context = super(LocationListPlugin, self).render(context, instance, placeholder)
         context['location_list'] = Location.objects.filter(status=Location.StatusChoices.active)
         return context
 
@@ -86,8 +95,8 @@ class LocationPlugin(PluginTemplateMixin, CMSPluginBase):
 
     def render(self, context, instance, placeholder):
         ''' Allows this plugin to use templates designed for a list of locations. '''
-        context = super(LocationPlugin,self).render(context,instance,placeholder)
-        context['location_list'] = [instance.location,]
+        context = super(LocationPlugin, self).render(context, instance, placeholder)
+        context['location_list'] = [instance.location, ]
         return context
 
 
@@ -100,32 +109,38 @@ class EventListPlugin(PluginTemplateMixin, CMSPluginBase):
 
     fieldsets = (
         (None, {
-            'fields': ('title','eventType','template','cssClasses')
+            'fields': ('title', 'eventType', 'template', 'cssClasses')
         }),
         (_('Limit Start Date'), {
-            'fields': ('limitTypeStart','daysStart','startDate'),
+            'fields': ('limitTypeStart', 'daysStart', 'startDate'),
         }),
         (_('Limit End Date'), {
-            'fields': ('limitTypeEnd','daysEnd','endDate'),
+            'fields': ('limitTypeEnd', 'daysEnd', 'endDate'),
         }),
         (_('Limit Number'), {
-            'classes': ('collapse',),
-            'fields': ('limitNumber','sortOrder'),
+            'classes': ('collapse', ),
+            'fields': ('limitNumber', 'sortOrder'),
         }),
         (_('Limit Categories/Levels'), {
-            'classes': ('collapse',),
-            'fields': ('eventCategories','seriesCategories','levels'),
+            'classes': ('collapse', ),
+            'fields': ('eventCategories', 'seriesCategories', 'levels'),
         }),
         (_('Other Restrictions'), {
-            'classes': ('collapse',),
-            'fields': ('limitToOpenRegistration','location','weekday'),
+            'classes': ('collapse', ),
+            'fields': ('limitToOpenRegistration', 'location', 'weekday'),
         })
     )
 
     def render(self, context, instance, placeholder):
-        context = super(EventListPlugin,self).render(context,instance,placeholder)
+        context = super(EventListPlugin, self).render(context, instance, placeholder)
 
-        listing = Event.objects.exclude(status__in=[Event.RegStatus.hidden, Event.RegStatus.linkOnly])
+        # Ensure that the CSRF protection cookie is set for all lists of events.
+        # Useful for things like buttons that go directly into the registration process.
+        get_token(context.get('request'))
+
+        listing = Event.objects.exclude(
+            status__in=[Event.RegStatus.hidden, Event.RegStatus.linkOnly]
+        )
 
         if instance.eventType == 'S':
             listing = listing.instance_of(Series)
@@ -143,12 +158,12 @@ class EventListPlugin(PluginTemplateMixin, CMSPluginBase):
             endKey = 'endTime__lte'
 
         if instance.startDate:
-            filters[startKey] = datetime.combine(instance.startDate,datetime.min.time())
+            filters[startKey] = datetime.combine(instance.startDate, datetime.min.time())
         elif instance.daysStart is not None:
             filters[startKey] = timezone.now() + timedelta(days=instance.daysStart)
 
         if instance.endDate:
-            filters[endKey] = datetime.combine(instance.endDate,datetime.max.time())
+            filters[endKey] = datetime.combine(instance.endDate, datetime.max.time())
         elif instance.daysEnd is not None:
             filters[endKey] = timezone.now() + timedelta(days=instance.daysEnd)
 
@@ -186,6 +201,24 @@ class PublicCalendarPlugin(CMSPluginBase):
     render_template = 'core/public_calendar.html'
     cache = True
     module = _('Events')
+
+
+class CreateInvoicePlugin(CMSPluginBase):
+    model = CMSPlugin
+    name = _('Generate Invoice')
+    render_template = 'cms/forms/plugin_crispy_form.html'
+    cache = False
+    module = _('Payments')
+
+    def render(self, context, instance, placeholder):
+        context = super(CreateInvoicePlugin, self).render(context, instance, placeholder)
+
+        registration = getattr(context.get('registration', None), 'id', None)
+        user = getattr(context.get('user', None), 'id', None)
+
+        context.update({
+            'form': CreateInvoiceForm(user=user, registration=registration),
+        })
 
 
 plugin_pool.register_plugin(StaffMemberListPlugin)

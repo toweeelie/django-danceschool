@@ -1,32 +1,35 @@
-from django.conf.urls import url
+from django.urls import path
 
 from . import stats
 from .views import SchoolStatsView
 
 urlpatterns = [
     # These are stats CSV queries that will be eventually moved to the management app
-    url(r'^$', SchoolStatsView.as_view(),name='schoolStatsView'),
+    path('', SchoolStatsView.as_view(), name='schoolStatsView'),
 
-    url(r'^monthlyperformance/csv/$', stats.MonthlyPerformanceCSV,name='MonthlyPerformanceCSV'),
-    url(r'^monthlyperformance/json/$', stats.MonthlyPerformanceJSON,name='MonthlyPerformanceJSON'),
+    path('monthlyperformance/csv/', stats.MonthlyPerformanceCSV, name='MonthlyPerformanceCSV'),
+    path('monthlyperformance/json/', stats.MonthlyPerformanceJSON, name='MonthlyPerformanceJSON'),
 
-    url(r'^classcounthistogram/csv/$',stats.ClassCountHistogramCSV,name='ClassCountHistogramCSV'),
-    url(r'^classcounthistogram/json/$',stats.ClassCountHistogramJSON,name='ClassCountHistogramJSON'),
+    path('classcounthistogram/csv/', stats.ClassCountHistogramCSV, name='ClassCountHistogramCSV'),
+    path('classcounthistogram/json/', stats.ClassCountHistogramJSON, name='ClassCountHistogramJSON'),
 
-    url(r'^averagesbyclasstype/csv/$',stats.AveragesByClassTypeCSV,name='AveragesByClassTypeCSV'),
-    url(r'^averagesbyclasstype/json/$',stats.AveragesByClassTypeJSON,name='AveragesByClassTypeJSON'),
+    path('averagesbyclasstype/csv/', stats.AveragesByClassTypeCSV, name='AveragesByClassTypeCSV'),
+    path('averagesbyclasstype/json/', stats.AveragesByClassTypeJSON, name='AveragesByClassTypeJSON'),
 
-    url(r'^classtypemonthly/json/$',stats.ClassTypeMonthlyJSON,name='ClassTypeMonthlyJSON'),
+    path('classtypemonthly/json/', stats.ClassTypeMonthlyJSON, name='ClassTypeMonthlyJSON'),
 
-    url(r'^locationperformance/csv/$',stats.LocationPerformanceCSV,name='LocationPerformanceCSV'),
-    url(r'^locationperformance/json/$',stats.LocationPerformanceJSON,name='LocationPerformanceJSON'),
+    path('locationperformance/csv/', stats.LocationPerformanceCSV, name='LocationPerformanceCSV'),
+    path('locationperformance/json/', stats.LocationPerformanceJSON, name='LocationPerformanceJSON'),
 
-    url(r'^advanceregistration/json/$',stats.AdvanceRegistrationDaysJSON,name='AdvanceRegistrationDaysJSON'),
-    url(r'^registrationhours/json/$',stats.RegistrationHoursJSON,name='RegistrationHoursJSON'),
-    url(r'^multiregistration/json/$',stats.MultiRegistrationJSON,name='MultiRegistrationJSON'),
+    path('advanceregistration/json/', stats.AdvanceRegistrationDaysJSON, name='AdvanceRegistrationDaysJSON'),
+    path('registrationhours/json/', stats.RegistrationHoursJSON, name='RegistrationHoursJSON'),
+    path('multiregistration/json/', stats.MultiRegistrationJSON, name='MultiRegistrationJSON'),
 
-    url(r'^registrationtypeaverages/json/$',stats.RegistrationTypeAveragesJSON,name='RegistrationTypeAveragesJSON'),
-    url(r'^referralcounts/json/$',stats.RegistrationReferralCountsJSON,name='RegistrationReferralCountsJSON'),
+    path(
+        'registrationtypeaverages/json/', stats.RegistrationTypeAveragesJSON,
+        name='RegistrationTypeAveragesJSON'
+    ),
+    path('referralcounts/json/', stats.RegistrationReferralCountsJSON, name='RegistrationReferralCountsJSON'),
 
-    url(r'^bestcustomers/json/$',stats.getBestCustomersJSON,name='bestCustomersJSON'),
+    path('bestcustomers/json/', stats.getBestCustomersJSON, name='bestCustomersJSON'),
 ]

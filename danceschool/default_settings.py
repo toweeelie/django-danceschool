@@ -134,11 +134,16 @@ DJANGOCMS_FORMS_TEMPLATES = (
 # wouldn't make sense to do so.
 CMS_PLACEHOLDER_CONF = {
     None: {
-        'excluded_plugins': ['PictureSplashTemplatePlugin',],
+        'excluded_plugins': [
+            'PictureSplashTemplatePlugin',
+            'DoorRegisterVoucherPlugin',
+            'DoorRegisterGuestSearchPlugin',
+            'DoorRegisterEventPlugin'
+        ],
     },
     'splash_image': {
         'name': 'Splash Background Image',
-        'plugins': ['PictureSplashTemplatePlugin',],
+        'plugins': ['PictureSplashTemplatePlugin', ],
         'excluded_plugins': [],
         'limits': {
             'global': 1,
@@ -152,12 +157,16 @@ CMS_PLACEHOLDER_CONF = {
     },
     'splash_carousel': {
         'name': 'Splash Carousel',
-        'plugins': ['Bootstrap4CarouselPlugin',],
+        'plugins': ['Bootstrap4CarouselPlugin', ],
         'excluded_plugins': [],
         'limits': {
             'Bootstrap4CarouselPlugin': 1,
         },
     },
+    'register_placeholder': {
+        'name': 'Door Register',
+        'excluded_plugins': ['PictureSplashTemplatePlugin'],
+    }
 }
 
 # DJANGOCMS_PICTURE_TEMPLATES = []

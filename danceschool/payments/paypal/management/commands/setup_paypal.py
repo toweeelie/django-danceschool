@@ -44,7 +44,10 @@ class Command(BaseCommand):
         ]
         for this_app in required_apps:
             if not apps.is_installed(this_app[0]):
-                self.stdout.write(self.style.ERROR('ERROR: %s is not installed or listed in INSTALLED_APPS. Please install before proceeding.' % this_app[1]))
+                self.stdout.write(self.style.ERROR(
+                    ('ERROR: %s is not installed or listed in ' % this_app[1]) +
+                    'INSTALLED_APPS. Please install before proceeding.'
+                ))
                 return None
 
         self.stdout.write(
@@ -54,11 +57,11 @@ CHECKING PAYPAL INTEGRATION
             """
         )
 
-        mode = getattr(settings,'PAYPAL_MODE',None)
-        client_id = getattr(settings,'PAYPAL_CLIENT_ID','')
-        client_secret = getattr(settings,'PAYPAL_CLIENT_SECRET','')
+        mode = getattr(settings, 'PAYPAL_MODE', None)
+        client_id = getattr(settings, 'PAYPAL_CLIENT_ID', '')
+        client_secret = getattr(settings, 'PAYPAL_CLIENT_SECRET', '')
 
-        if mode in ['sandbox','live']:
+        if mode in ['sandbox', 'live']:
             self.stdout.write('Paypal Mode: %s, OK' % mode)
         else:
             self.stdout.write(self.style.WARNING('Paypal Mode: not set'))
@@ -73,7 +76,7 @@ CHECKING PAYPAL INTEGRATION
         else:
             self.stdout.write(self.style.WARNING('Paypal client secret not set.'))
 
-        if mode in ['sandbox','live'] and client_id and client_secret:
+        if mode in ['sandbox', 'live'] and client_id and client_secret:
             try:
                 import paypalrestsdk
                 paypalrestsdk.configure({
@@ -89,25 +92,34 @@ CHECKING PAYPAL INTEGRATION
             else:
                 self.stdout.write(self.style.SUCCESS('Successfully connected to Paypal using API credentials.'))
 
-        add_paypal_paynow = self.boolean_input('Add Paypal Pay Now link to the registration summary view to allow students to pay [Y/n]', True)
+        add_paypal_paynow = self.boolean_input(
+            'Add Paypal Pay Now link to the registration summary view to ' +
+            'allow students to pay [Y/n]', True
+        )
         if add_paypal_paynow:
-            home_page = Page.objects.filter(is_home=True,publisher_is_draft=False).first()
+            home_page = Page.objects.filter(is_home=True, publisher_is_draft=False).first()
             if not home_page:
                 self.stdout.write(self.style.ERROR('Cannot add Pay Now link because a home page has not yet been set.'))
             else:
-                paynow_sp = StaticPlaceholder.objects.get_or_create(code='registration_payment_placeholder')
-                paynow_p_draft = paynow_sp[0].draft
-                paynow_p_public = paynow_sp[0].public
+                placeholders = [
+                    ('registration_payment_placeholder', 'online registrations'),
+                    ('registration_payatdoor_placeholder', 'at-the-door payments')
+                ]
 
-                if paynow_p_public.get_plugins().filter(plugin_type='CartPaymentFormPlugin').exists():
-                    self.stdout.write('Paypal Pay Now button already present.')
-                else:
-                    add_plugin(
-                        paynow_p_draft, 'CartPaymentFormPlugin', initial_language,
-                        successPage=home_page,
-                    )
-                    add_plugin(
-                        paynow_p_public, 'CartPaymentFormPlugin', initial_language,
-                        successPage=home_page,
-                    )
-                    self.stdout.write('Paypal Pay Now link added.')
+                for p in in placeholders:
+                    paynow_sp = StaticPlaceholder.objects.get_or_create(code=p[0])
+                    paynow_p_draft = paynow_sp[0].draft
+                    paynow_p_public = paynow_sp[0].public
+
+                    if paynow_p_public.get_plugins().filter(plugin_type='CartPaymentFormPlugin').exists():
+                        self.stdout.write('Paypal Pay Now button already present for %s.' % p[1])
+                    else:
+                        add_plugin(
+                            paynow_p_draft, 'CartPaymentFormPlugin', initial_language,
+                            successPage=home_page,
+                        )
+                        add_plugin(
+                            paynow_p_public, 'CartPaymentFormPlugin', initial_language,
+                            successPage=home_page,
+                        )
+                        self.stdout.write('Paypal Pay Now link added for %s.' % p[1])
