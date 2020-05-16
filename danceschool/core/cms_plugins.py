@@ -49,15 +49,20 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
             listing = listing.filter(eventstaffmember__event__endTime__gte=timezone.now()).distinct()
 
         if instance.orderChoice == 'firstName':
-            listing = listing.order_by('translations__firstName', 'translations__lastName')
+            listing = listing.translated().order_by('translations__firstName', 'translations__lastName')
         elif instance.orderChoice == 'status':
-            listing = listing.order_by('instructor__status', 'translations__firstName', 'translations__lastName')
+            listing = listing.translated().order_by('instructor__status', 'translations__firstName', 'translations__lastName')
         elif instance.orderChoice == 'manual':
-            listing = listing.order_by('instructor__order', 'instructor__status', 'translations__firstName', 'translations__lastName')
+            listing = listing.translated().order_by(
+                'instructor__order', 
+                'instructor__status', 
+                'translations__firstName', 
+                'translations__lastName'
+            )
         elif instance.orderChoice == 'random':
-            listing = listing.order_by('?')
+            listing = listing.translated().order_by('?')
         else:
-            listing = listing.order_by('translations__lastName', 'translations__firstName')
+            listing = listing.translated().order_by('translations__lastName', 'translations__firstName')
 
         context.update({
             'list_title': instance.title,
