@@ -92,8 +92,8 @@ class TransactionPartyAutoComplete(autocomplete.Select2QuerySetView):
             qs = qs.filter(
                 Q(name__icontains=self.q) | Q(user__first_name__istartswith=firstName) |
                 Q(user__last_name__istartswith=lastName) |
-                Q(staffMember__firstName__istartswith=firstName) |
-                Q(staffMember__lastName__istartswith=lastName) |
+                Q(staffMember__translations__firstName__istartswith=firstName) |
+                Q(staffMember__translations__lastName__istartswith=lastName) |
                 Q(location__name__icontains=self.q)
             )
 
@@ -136,9 +136,9 @@ class TransactionPartyAutoComplete(autocomplete.Select2QuerySetView):
                     'create_id': True,
                 }]
 
-            for s in StaffMember.objects.filter(
+            for s in StaffMember.objects.translated('en').distinct().filter(
                 Q(
-                    (Q(firstName__istartswith=q) | Q(lastName__istartswith=q)) &
+                    (Q(translations__firstName__istartswith=q) | Q(translations__lastName__istartswith=q)) &
                     Q(transactionparty__isnull=True)
                 )
             ):

@@ -145,8 +145,8 @@ class StaffMemberAutoComplete(autocomplete.Select2QuerySetView):
             lastName = words.pop()
             firstName = words.pop() if words else lastName
 
-            qs = qs.filter(
-                Q(firstName__istartswith=firstName) | Q(lastName__istartswith=lastName) |
+            qs = qs.translated('en').distinct().filter(
+                Q(translations__firstName__istartswith=firstName) | Q(translations__lastName__istartswith=lastName) |
                 Q(publicEmail__istartswith=self.q)
             )
 
@@ -157,6 +157,6 @@ class StaffMemberAutoComplete(autocomplete.Select2QuerySetView):
         if self.create_field == 'fullName':
             firstName = text.split(' ')[0]
             lastName = ' '.join(text.split(' ')[1:])
-            return self.get_queryset().create(**{'firstName': firstName, 'lastName': lastName})
+            return self.get_queryset().create(**{'translations__firstName': firstName, 'translations__lastName': lastName})
         else:
             return super(StaffMemberAutoComplete, self).create_object(text)
