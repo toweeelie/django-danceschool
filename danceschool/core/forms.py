@@ -1188,7 +1188,7 @@ class SubstituteReportingForm(forms.ModelForm):
                     Instructor.InstructorStatus.retired,
                     Instructor.InstructorStatus.retiredGuest
                 ]
-            ).order_by('instructor__status', 'lastName', 'firstName'))
+            ).translated('en').order_by('instructor__status', 'translations__lastName', 'translations__firstName'))
         self.fields['replacedStaffMember'] = SeriesTeacherChoiceField(
             queryset=SeriesTeacher.objects.none()
         )
@@ -1268,7 +1268,10 @@ class SubstituteReportingForm(forms.ModelForm):
         exclude = []
 
     class Media:
-        js = ('js/substituteteacher_ajax.js',)
+        js = (
+            'jquery/jquery.min.js',
+            'js/substituteteacher_ajax.js',
+        )
 
 
 class StaffMemberBioChangeForm(forms.ModelForm):
