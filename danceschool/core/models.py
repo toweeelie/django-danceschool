@@ -2194,7 +2194,7 @@ class Customer(EmailRecipientMixin, models.Model):
     email = models.EmailField(_('Email address'))
     phone = models.CharField(_('Telephone'), max_length=20, null=True, blank=True)
 
-    sheet_id = models.CharField(_('Sheet ID'), default='', max_length=50)
+    sheet_id = models.CharField(_('Sheet ID'), default='', max_length=50, blank=True)
     customer_id = models.PositiveIntegerField(_('Customer ID'), default=0)
     
     groups = models.ManyToManyField(

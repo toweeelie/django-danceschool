@@ -920,8 +920,8 @@ class AccountProfileView(LoginRequiredMixin, DetailView):
         # time.
         # print(os.getcwd())
         
-        token_file = os.path.join(settings.BASE_DIR,'token.pickle')
-        creds_file = os.path.join(settings.BASE_DIR,'credentials.json')
+        token_file = os.path.join(settings.BASE_DIR,'custom','token.pickle')
+        creds_file = os.path.join(settings.BASE_DIR,'custom','credentials.json')
         
         if os.path.exists(token_file):
             with open(token_file, 'rb') as token:
