@@ -236,6 +236,22 @@ class ClassChoiceForm(forms.Form):
             self.fields['payAtDoor'] = forms.BooleanField(
                 required=False, label=_('Door/Invoice Registration')
             )
+            self.fields['CustomerSearch'] = forms.ModelChoiceField(
+                queryset=Customer.objects.all(),
+                required=False, 
+                widget=autocomplete.ModelSelect2(
+                    url='autocompleteCustomer',
+                    attrs={
+                        # This will set the input placeholder attribute:
+                        'data-placeholder': _('Enter a customer name'),
+                        # This will set the yourlabs.Autocomplete.minimumCharacters
+                        # options, the naming conversion is handled by jQuery
+                        'data-minimum-input-length': 2,
+                        'data-max-results': 4,
+                        'class': 'modern-style',
+                    }
+                )
+            )
 
         # If specified in form kwargs, add a voucher code field.
         if voucherField:
@@ -384,6 +400,8 @@ class ClassChoiceForm(forms.Form):
         if not hasContent:
             raise ValidationError(_('Must register for at least one class or series.'))
 
+    class Media:
+        js = ('admin/js/vendor/jquery/jquery.min.js',)
 
 class RegistrationContactForm(forms.Form):
     '''
@@ -472,6 +490,14 @@ class RegistrationContactForm(forms.Form):
             self.fields['lastName'].initial = user.customer.last_name or user.last_name
             self.fields['email'].initial = user.customer.email or user.email
             self.fields['phone'].initial = user.customer.phone
+
+        reg = self._registration
+        if reg.firstName:
+            self.fields['firstName'].initial = reg.firstName
+            self.fields['lastName'].initial = reg.lastName
+            self.fields['email'].initial = reg.email
+            self.fields['phone'].initial = reg.phone
+            # self.fields['phone'].initial = reg.phone
 
         self.helper.layout = Layout(
             self.get_top_layout(),

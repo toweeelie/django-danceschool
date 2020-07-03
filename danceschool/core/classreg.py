@@ -159,11 +159,23 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
         else:
             submissionUser = None
 
-        reg = TemporaryRegistration(
-            submissionUser=submissionUser, dateTime=timezone.now(),
-            payAtDoor=non_event_listing.pop('payAtDoor', False),
-            expirationDate=expiry,
-        )
+        presetCustomer = non_event_listing.pop('CustomerSearch',False)
+
+        if presetCustomer:
+            reg = TemporaryRegistration(
+                firstName = presetCustomer.first_name, lastName = presetCustomer.last_name, 
+                email = presetCustomer.email, phone = presetCustomer.phone, 
+                submissionUser=submissionUser, dateTime=timezone.now(),
+                payAtDoor=non_event_listing.pop('payAtDoor', False),
+                expirationDate=expiry,
+            )
+        else:
+            reg = TemporaryRegistration(
+                submissionUser=submissionUser, dateTime=timezone.now(),
+                payAtDoor=non_event_listing.pop('payAtDoor', False),
+                expirationDate=expiry,
+            )
+        
 
         # Anything passed by this form that is not an Event field (any extra fields) are
         # passed directly into the TemporaryRegistration's data.
