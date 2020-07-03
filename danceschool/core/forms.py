@@ -497,7 +497,7 @@ class RegistrationContactForm(forms.Form):
             self.fields['lastName'].initial = reg.lastName
             self.fields['email'].initial = reg.email
             self.fields['phone'].initial = reg.phone
-            # self.fields['phone'].initial = reg.phone
+            self.fields['agreeToPolicies'].initial = True
 
         self.helper.layout = Layout(
             self.get_top_layout(),
