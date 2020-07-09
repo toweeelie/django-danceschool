@@ -401,7 +401,10 @@ class ClassChoiceForm(forms.Form):
             raise ValidationError(_('Must register for at least one class or series.'))
 
     class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
+        )
 
 class RegistrationContactForm(forms.Form):
     '''
