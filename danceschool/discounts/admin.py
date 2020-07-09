@@ -49,7 +49,10 @@ class CustomerDiscountInlineForm(ModelForm):
         exclude = []
 
     class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
+        )
 
 
 class CustomerGroupDiscountInline(admin.StackedInline):
@@ -72,7 +75,10 @@ class DiscountComboAdminForm(ModelForm):
         exclude = []
 
     class Media:
-        js = ('js/discountcombo_collapsetypes.js', )
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'js/discountcombo_collapsetypes.js',
+        )
 
 
 class DiscountComboAdmin(admin.ModelAdmin):

@@ -873,9 +873,6 @@ class DoorAmountForm(forms.Form):
 
         return form_data
 
-    class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
-
 
 class EventAutocompleteForm(forms.Form):
     '''
@@ -911,9 +908,6 @@ class EventAutocompleteForm(forms.Form):
             'event',
             Submit('submit', _('Submit'))
         )
-
-    class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
 
 
 class RefundForm(forms.ModelForm):

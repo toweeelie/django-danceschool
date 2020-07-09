@@ -111,7 +111,11 @@ class ExpenseItemAdminForm(ModelForm):
         }
 
     class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
+            'js/update_task_wages.js',
+        )
 
 
 class ExpenseItemAdminChangelistForm(ExpenseItemAdminForm):
@@ -212,9 +216,6 @@ class ExpenseItemAdmin(EventLinkMixin, admin.ModelAdmin):
         obj.submissionUser = request.user
         obj.save()
 
-    class Media:
-        js = ('js/update_task_wages.js', )
-
 
 class RevenueItemAdminForm(ModelForm):
     currentlyHeldBy = ModelChoiceField(
@@ -262,7 +263,10 @@ class RevenueItemAdminForm(ModelForm):
         exclude = []
 
     class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
+        )
 
 
 @admin.register(RevenueItem)
@@ -572,9 +576,6 @@ class GenericRepeatedExpenseAdminForm(ModelForm):
             updatedChoices[index + 1:]
         )
         self.fields.get('applyRateRule').choices = updatedChoices
-
-    class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
 
 
 @admin.register(GenericRepeatedExpense)

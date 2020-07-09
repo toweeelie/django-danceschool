@@ -79,7 +79,10 @@ class EventStaffMemberInlineForm(ModelForm):
     )
 
     class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js', )
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
+        )
 
 
 class SeriesTeacherInlineForm(ModelForm):
@@ -249,11 +252,12 @@ class EventOccurrenceInline(admin.TabularInline):
 
     class Media:
         js = (
-            'timepicker/jquery.timepicker.min.js',
+            'admin/js/vendor/jquery/jquery.min.js',
             'jquery-ui/jquery-ui.min.js',
-            'datepair/datepair.min.js',
             'moment/moment.min.js',
+            'datepair/datepair.min.js',
             'datepair/jquery.datepair.min.js',
+            'timepicker/jquery.timepicker.min.js',
             'js/eventadmin_pickers.js'
         )
         css = {
@@ -618,7 +622,10 @@ class CustomerGroupAdminForm(ModelForm):
         exclude = []
 
     class Media:
-        js = ('admin/js/vendor/jquery/jquery.min.js',)
+        js = (
+            'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
+        )
 
 
 @admin.register(CustomerGroup)
@@ -728,7 +735,7 @@ class LocationAdmin(admin.ModelAdmin):
             to_field = request.POST.get(TO_FIELD_VAR)
             attr = str(to_field) if to_field else obj._meta.pk.attname
             # Retrieve the `object_id` from the resolved pattern arguments.
-            value = request.resolver_match.args[0]
+            value = request.resolver_match.args[0] if request.resolver_match.args else None
             new_value = obj.serializable_value(attr)
             popup_response_data = json.dumps({
                 'action': 'change',
@@ -968,6 +975,7 @@ class SeriesAdminForm(ModelForm):
     class Media:
         js = (
             'admin/js/vendor/jquery/jquery.min.js',
+            'autocomplete_light/jquery.init.js',
             'js/serieslocation_capacity_change.js',
             'js/location_related_objects_lookup.js',
         )
