@@ -115,7 +115,7 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
         queryset=User.objects.filter(Q(staffmember__isnull=False) | Q(is_staff=True)),
         required=True
     )
-    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all())
+    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all(), required=False)
     invoice = forms.ModelChoiceField(queryset=Invoice.objects.all(), required=False)
 
     amountPaid = forms.FloatField(label=_('Amount Paid'), required=True, min_value=0)
