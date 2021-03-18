@@ -73,6 +73,14 @@ def getApplicableDiscountCombos(
         reverse=True
     )
 
+    # Some discounts require that the customer match, and these discounts use
+    # only a subset of the point-based list to determine eligibility.
+    pointbased_cart_customer_object_list = []
+    if customer:
+        pointbased_cart_customer_object_list = [
+            x for x in pointbased_cart_object_list if x.customer == customer
+        ]
+
     # Discounts that require registration a number of days in advance are evaluated against
     # midnight local time of the day of registration (so that discounts always close at
     # midnight local time).  Because installations may have timezone support enabled or disabled,
@@ -90,19 +98,26 @@ def getApplicableDiscountCombos(
     useableCodes = []
 
     for x in availableDiscountCodes:
-        # Create two lists, one that starts with all of the items necessary for the discount to apply,
-        # and one that starts empty.  As we find an item in the cart that matches an item in the discount
-        # requirements, move the item in the discount requirements from the first list to the second list.
-        # If, after all items have been checked, the first list is empty and the second list is full, then
-        # the discount is applicable to the cart.  The third list keeps track of the items used to apply
+        # Create two lists, one that starts with all of the items necessary for
+        # the discount to apply, and one that starts empty.  As we find an item
+        # in the cart that matches an item in the discount requirements, move
+        # the item in the discount requirements from the first list to the
+        # second list. If, after all items have been checked, the first list is
+        # empty and the second list is full, then the discount is applicable to
+        # the cart.  The third list keeps track of the items used to apply
         # the discount.
         necessary_discount_items = x.getComponentList()[:]
         count_necessary_items = len(necessary_discount_items)
         matched_discount_items = []
         matched_cart_items = []
 
+        if x.customerMatchRequired:
+            cart_list = pointbased_cart_customer_object_list
+        else:
+            cart_list = pointbased_cart_object_list
+
         # For each item in the cart
-        for y in pointbased_cart_object_list:
+        for y in cart_list:
             # for each component of the potential discount that has not already been matched
             for j, z in enumerate(necessary_discount_items):
                 # If pricing tiers match, then check each of the other attributes.
@@ -128,7 +143,7 @@ def getApplicableDiscountCombos(
                         match_flag = False
                     # If the discount combo is only available for the first X registrants,
                     # then check that we don't already have X individuals registered.
-                    # This includes TemporaryRegistrations (so too many discounts don't get
+                    # This includes temporary Registrations (so too many discounts don't get
                     # handed out if registration is in progress).
                     elif (
                         x.firstXRegistered is not None and
@@ -154,7 +169,7 @@ def getApplicableDiscountCombos(
                 x.discountcombocomponent_set.all() if m.allWithinPointGroup
             ]
             additionalItems = [
-                b for b in pointbased_cart_object_list if
+                b for b in cart_list if
                 b.event.pricingTier.pricingtiergroup.group in
                 fullPointGroupsMatched
             ]

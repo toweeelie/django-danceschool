@@ -2,7 +2,7 @@ from django.db.models import Count, Avg, Sum, IntegerField, Case, When, Q, Min, 
 from django.db.models.functions import TruncDate
 from django.contrib.admin.views.decorators import staff_member_required
 from django.http import HttpResponse, JsonResponse
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from django.utils import timezone
 
 from dateutil.relativedelta import relativedelta
@@ -25,7 +25,8 @@ def getAveragesByClassType(startDate=None, endDate=None):
     # If a date filter was passed in GET, then apply it
     when_all = {
         'classdescription__series__eventregistration__cancelled': False,
-        'classdescription__series__eventregistration__dropIn': False
+        'classdescription__series__eventregistration__dropIn': False,
+        'classdescription__series__eventregistration__registration__final': True,
     }
 
     timeFilters = {}
@@ -197,6 +198,7 @@ def getClassTypeMonthlyData(year=None, series=None, typeLimit=None):
     when_all = {
         'eventregistration__dropIn': False,
         'eventregistration__cancelled': False,
+        'eventregistration__registration__final': True,
     }
 
     annotations = {'registrations': Sum(Case(When(Q(**when_all), then=1), output_field=FloatField()))}
@@ -312,6 +314,7 @@ def getClassCountHistogramData(cohortStart=None, cohortEnd=None):
     when_all = {
         'eventregistration__dropIn': False,
         'eventregistration__cancelled': False,
+        'eventregistration__registration__final': True,
     }
 
     cohortFilters = {}
@@ -329,7 +332,7 @@ def getClassCountHistogramData(cohortStart=None, cohortEnd=None):
 
     annotations = {
         'eventregistration__event__startTime__min': Min('eventregistration__event__startTime'),
-        'registrations': Sum(Case(When(Q(**when_all), then=1), output_field=IntegerField())),
+        'registrations': Sum(Case(When(Q(**when_all), then=1), default=0, output_field=IntegerField())),
     }
     for this_role in role_list:
         annotations[this_role.pluralName] = Sum(Case(
@@ -337,6 +340,7 @@ def getClassCountHistogramData(cohortStart=None, cohortEnd=None):
                 Q(Q(**when_all) & Q(eventregistration__role=this_role)),
                 then=1
             ),
+            default=0,
             output_field=IntegerField()
         ))
 
@@ -459,6 +463,7 @@ def getMonthlyPerformance():
     when_all = {
         'eventregistration__dropIn': False,
         'eventregistration__cancelled': False,
+        'eventregistration__registration__final': True,
     }
 
     # Get objects at the Series level so that we can calculate StudentHours
@@ -495,8 +500,11 @@ def getMonthlyPerformance():
             # Total Registrations per month and hours per month require a separate query for each month
             yearTotals['Registrations'][year][month] = len(
                 Registration.objects.filter(
-                    eventregistration__dropIn=False, eventregistration__cancelled=False,
-                    eventregistration__event__year=year, eventregistration__event__month=month
+                    final=True,
+                    eventregistration__dropIn=False,
+                    eventregistration__cancelled=False,
+                    eventregistration__event__year=year,
+                    eventregistration__event__month=month
                 ).distinct()
             )
             yearTotals['Hours'][year][month] = sum([
@@ -658,7 +666,8 @@ def getLocationPerformance(startDate=None, endDate=None):
 
     timeFilters.update({
         'event__eventregistration__dropIn': False,
-        'event__eventregistration__cancelled': False
+        'event__eventregistration__cancelled': False,
+        'event__eventregistration__registration__final': True,
     })
 
     eventRegistrationCounts = list(Location.objects.values_list('name').filter(
@@ -713,7 +722,7 @@ def LocationPerformanceCSV(request):
 
 
 def getRegistrationTypesAveragesByYear():
-    srs = EventRegistration.objects.all()
+    srs = EventRegistration.objects.filter(registration__final=True)
     eligible_years = [x['event__year'] for x in srs.values('event__year').annotate(Count('event__year'))]
     eligible_years.sort()
 
@@ -751,7 +760,7 @@ def getRegistrationReferralCounts(startDate, endDate):
     by clicking through a referral button).
     '''
 
-    timeFilters = {}
+    timeFilters = {'final': True}
     if startDate:
         timeFilters['dateTime__gte'] = startDate
     if endDate:
@@ -780,7 +789,7 @@ def MultiRegistrationJSON(request):
     startDate = getDateTimeFromGet(request, 'startDate')
     endDate = getDateTimeFromGet(request, 'endDate')
 
-    timeFilters = {}
+    timeFilters = {'final': True}
 
     if startDate:
         timeFilters['dateTime__gte'] = startDate
@@ -810,7 +819,7 @@ def RegistrationHoursJSON(request):
     startDate = getDateTimeFromGet(request, 'startDate')
     endDate = getDateTimeFromGet(request, 'endDate')
 
-    timeFilters = {}
+    timeFilters = {'final': True}
 
     if startDate:
         timeFilters['dateTime__gte'] = startDate
@@ -840,7 +849,7 @@ def AdvanceRegistrationDaysJSON(request):
     startDate = getDateTimeFromGet(request, 'startDate')
     endDate = getDateTimeFromGet(request, 'endDate')
 
-    timeFilters = {}
+    timeFilters = {'final': True}
 
     if startDate:
         timeFilters['dateTime__gte'] = startDate
@@ -872,9 +881,11 @@ def AdvanceRegistrationDaysJSON(request):
 @staff_member_required
 def getGeneralStats(request):
     # total number of students:
-    totalStudents = Customer.objects.distinct().count()
+    totalStudents = Customer.objects.filter(eventregistration__isnull=False).distinct().count()
     numSeries = Series.objects.distinct().count()
-    totalSeriesRegs = EventRegistration.objects.filter(dropIn=False, cancelled=False).values(
+    totalSeriesRegs = EventRegistration.objects.filter(
+        dropIn=False, cancelled=False, registration__final=True
+    ).values(
         'event', 'customer__user__email'
     ).distinct().count()
 
@@ -900,14 +911,16 @@ def getBestCustomersJSON(request):
         'eventregistration__registration__dateTime__gte': ensure_timezone(
             datetime(timezone.now().year - 1, timezone.now().month, timezone.now().day)
         ),
-        'eventregistration__dropIn': False, 'eventregistration__cancelled': False
+        'eventregistration__dropIn': False, 'eventregistration__cancelled': False,
+        'eventregistration__registration__final': True
     }).annotate(Count('eventregistration')).order_by('-eventregistration__count')[:10]
 
     bestCustomersAllTime = Customer.objects.values(
         'first_name', 'last_name'
     ).filter(**{
         'eventregistration__dropIn': False,
-        'eventregistration__cancelled': False
+        'eventregistration__cancelled': False,
+        'eventregistration__registration__final': True
     }).annotate(Count('eventregistration')).order_by('-eventregistration__count')[:10]
 
     mostActiveTeachersThisYear = SeriesTeacher.objects.filter(

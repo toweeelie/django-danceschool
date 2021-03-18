@@ -3,8 +3,9 @@ This file defines a variety of preferences that must be set in the DB,
 but can be changed dynamically.
 '''
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.template.loader import get_template
+from django.forms import ValidationError
 
 from dynamic_preferences.types import (
     BooleanPreference, StringPreference, IntegerPreference, FloatPreference,
@@ -16,10 +17,14 @@ from cms.models import Page
 from cms.forms.fields import PageSelectFormField
 
 from .utils.serializers import PageModelSerializer
-from .models import EventStaffCategory, EmailTemplate, get_defaultEmailName, get_defaultEmailFrom
+from .models import (
+    EventStaffCategory, EmailTemplate, PublicEvent, Series,
+    get_defaultEmailName, get_defaultEmailFrom
+)
+from .mixins import ModelTemplateMixin
+
 
 # we create some section objects to link related preferences together
-
 general = Section('general', _('General Settings'))
 contact = Section('contact', _('Contact Info'))
 registration = Section('registration', _('Registration'))
@@ -77,8 +82,49 @@ class DefaultAdminSuccessPage(IntegerPreference):
 
     def __init__(self, *args, **kwargs):
         ''' Changes the default serializer '''
-        super(self.__class__, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.serializer = PageModelSerializer
+
+
+@global_preferences_registry.register
+class DefaultSeriesPageTemplate(ModelTemplateMixin, ChoicePreference):
+    section = general
+    name = 'defaultSeriesPageTemplate'
+    verbose_name = _('Default Class Series Page Template')
+    help_text = _(
+        'Individual class series pages are rendered using this template by ' +
+        'default.  To add more options to this list, register your templates ' +
+        'with danceschool.core.registries.model_templates_registry.'
+    )
+    default = 'core/event_pages/individual_class.html'
+
+    def get_field_kwargs(self):
+        field_kwargs = super(ChoicePreference, self).get_field_kwargs()
+        field_kwargs['choices'] = self.get_template_choices(Series)
+        return field_kwargs
+
+    def get_choice_values(self):
+        return [c[0] for c in self.get_template_choices(Series)]
+
+@global_preferences_registry.register
+class DefaultPublicEventPageTemplate(ModelTemplateMixin, ChoicePreference):
+    section = general
+    name = 'defaultPublicEventPageTemplate'
+    verbose_name = _('Default Public Event Page Template')
+    help_text = _(
+        'Individual public event pages are rendered using this template by ' +
+        'default.  To add more options to this list, register your templates ' +
+        'with danceschool.core.registries.model_templates_registry.'
+    )
+    default = 'core/event_pages/individual_event.html'
+
+    def get_field_kwargs(self):
+        field_kwargs = super(ChoicePreference, self).get_field_kwargs()
+        field_kwargs['choices'] = self.get_template_choices(PublicEvent)
+        return field_kwargs
+
+    def get_choice_values(self):
+        return [c[0] for c in self.get_template_choices(PublicEvent)]
 
 
 @global_preferences_registry.register
@@ -179,7 +225,7 @@ class BusinessPhone(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -201,7 +247,7 @@ class BusinessAddress(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -215,7 +261,7 @@ class BusinessAddressLineTwo(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -228,7 +274,7 @@ class BusinessCity(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -241,7 +287,7 @@ class BusinessState(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -254,7 +300,7 @@ class BusinessZip(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -380,13 +426,30 @@ class ShowDescriptionRule(ChoicePreference):
         ('50', _('First 50 words')),
         ('all', _('Full description')),
     ]
-    verbose_name = _('Rule for showing class descriptions on the regisration page')
+    verbose_name = _('Rule for showing class descriptions on the registration page')
     help_text = _(
         'This option determines how much of each event\'s description is '
         'shown on the class registration page. Users can always select the ' +
         '\'more info\' link to access the full description.'
     )
     default = 'all'
+
+
+@global_preferences_registry.register
+class RegistrationWidgetType(ChoicePreference):
+    section = registration
+    name = 'widgetType'
+    choices = [
+        ('AC', _('Checkboxes')),
+        ('AQ', _('Quantity Inputs')),
+        ('SC', _('Checkboxes for Class Series, Quantity Inputs for Other Events')),
+        ('SQ', _('Quantity Inputs for Class Series, Checkboxes for Other Events')),
+    ]
+    verbose_name = _('Input field type for registration page')
+    help_text = _(
+        'This widget is diplayed for each option on the registration page'
+    )
+    default = 'AQ'
 
 
 @global_preferences_registry.register
@@ -455,6 +518,52 @@ class MultiRegDropInRule(ChoicePreference):
 
 
 @global_preferences_registry.register
+class MultiRegNameFormRule(ChoicePreference):
+    section = registration
+    name = 'multiRegNameFormRule'
+    choices = [
+        ('Y', _('Always')),
+        ('O', _('Only registrations not at the door')),
+        ('N', _('Never')),
+    ]
+    verbose_name = _('Ask for names associated with each event registration')
+    help_text = _(
+        'When a customer submits more than one event registration at a time, ' +
+        'either for multiple events or multiple times for the same event, the ' +
+        'registration process can request that they confirm the name and ' +
+        'email associated with each individual event registration as an ' +
+        'additional step in the process. If this option is not selected, then ' +
+        'the customer information from Step 2 of the process will be assigned ' +
+        'to each event registration. A "direct" at-the-door registration that ' +
+        'skips Step 2 of the process will also skip this step.'
+    )
+    default = 'Y'
+
+
+@global_preferences_registry.register
+class DoorCheckInRule(ChoicePreference):
+    section = registration
+    name = 'doorCheckInRule'
+    choices = [
+        ('0', _('Do not check in at-the-door registrants')),
+        ('O', _('Check in to the next event occurrence')),
+        ('E', _('Check in to the full event')),
+    ]
+    verbose_name = _(
+        'Automatically check customers in for at-the-door registrations.'
+    )
+    help_text = _(
+        'This option determines whether a customer who registers for an ' +
+        'event at the door is automatically checked in to either the next ' +
+        'occurrence of that event (with a grace period for events that have ' +
+        'already begun), or for the entire event.  Typically you will want ' +
+        'this feature enabled if you are keeping track of attendance using ' +
+        'event check-ins.' 
+    )
+    default = 'O'
+
+
+@global_preferences_registry.register
 class SalesTaxRate(FloatPreference):
     section = registration
     name = 'salesTaxRate'
@@ -491,6 +600,15 @@ class AllowAjaxSignin(BooleanPreference):
     )
     default = True
 
+@global_preferences_registry.register
+class AddStudentField(BooleanPreference):
+    section = registration
+    name = 'addStudentField'
+    verbose_name = _('Include a "student" checkbox in the registration process')
+    help_text = _(
+        'If checked, then this checkbox can be used to offer student discounts.'
+    )
+    default = True
 
 @global_preferences_registry.register
 class RegistrationSessionExpiryMinutes(IntegerPreference):
@@ -506,13 +624,13 @@ class RegistrationSessionExpiryMinutes(IntegerPreference):
 
 
 @global_preferences_registry.register
-class DeleteExpiredTemporaryRegistrations(BooleanPreference):
+class DeleteExpiredInvoices(BooleanPreference):
     section = registration
-    name = 'deleteExpiredTemporaryRegistrations'
-    verbose_name = _('Automatically delete expired temporary registration and session data')
+    name = 'deleteExpiredInvoices'
+    verbose_name = _('Automatically delete expired preliminary invoice and session data')
     help_text = _(
         'If this box is checked, then an hourly script will automatically ' +
-        'expired temporary registration and session data.  Disabling this ' +
+        'expired preliminary invoices and session data.  Disabling this ' +
         'feature is only recommended for testing.'
     )
     default = True
@@ -539,7 +657,7 @@ class DefaultEmailsFrom(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -553,7 +671,7 @@ class DefaultEmailsName(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -574,7 +692,7 @@ class ErrorEmailsFrom(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -587,7 +705,7 @@ class ErrorEmailsTo(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 

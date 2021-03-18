@@ -12,10 +12,9 @@ from danceschool.core.signals import (
 )
 from danceschool.core.constants import getConstant
 from danceschool.core.models import Customer, EventRegistration, Registration
-from danceschool.core.classreg import RegistrationSummaryView
 
 from .helpers import getApplicableDiscountCombos
-from .models import DiscountCombo, TemporaryRegistrationDiscount, RegistrationDiscount
+from .models import DiscountCombo, RegistrationDiscount
 
 
 # Define logger for this file
@@ -40,7 +39,13 @@ def getBestDiscount(sender, **kwargs):
     logger.debug('Signal fired to request discounts.')
 
     reg = kwargs.pop('registration', None)
+    invoice = kwargs.get('invoice', None)
+    customer_final = kwargs.pop('customer_final', False)
+
     if not reg:
+        reg = Registration.objects.filter(invoice=invoice).first()
+
+    if not reg or not invoice:
         logger.warning('No registration passed, discounts not applied.')
         return
 
@@ -48,8 +53,10 @@ def getBestDiscount(sender, **kwargs):
 
     # Check if this is a new customer, who may be eligible for special discounts
     newCustomer = True
-    customer = Customer.objects.filter(email=reg.email, first_name=reg.firstName, last_name=reg.lastName).first()
-    if (customer and customer.numEventRegistrations > 0) or sender != RegistrationSummaryView:
+    customer = Customer.objects.filter(
+        email=invoice.email, first_name=invoice.firstName, last_name=invoice.lastName
+    ).first()
+    if (customer and customer.numEventRegistrations > 0) or not customer_final:
         newCustomer = False
 
     eligible_filter = (
@@ -69,21 +76,23 @@ def getBestDiscount(sender, **kwargs):
         )
 
     # The items for which the customer registered.
-    eventregs_list = reg.temporaryeventregistration_set.all()
+    eventregs_list = reg.eventregistration_set.all()
     eligible_list = eventregs_list.filter(dropIn=False).filter(eligible_filter)
     ineligible_list = eventregs_list.filter(ineligible_filter)
 
+    student = getattr(eligible_list.first(), 'student', False)
+
     ineligible_total = sum(
         [x.event.getBasePrice(payAtDoor=payAtDoor) for x in ineligible_list.exclude(dropIn=True)] +
-        [x.price for x in ineligible_list.filter(dropIn=True)]
+        [x.event.getBasePrice(dropIns=1) for x in ineligible_list.filter(dropIn=True)]
     )
 
     # Get the applicable discounts and sort them in ascending category order
     # so that the best discounts are always listed in the order that they will
     # be applied.
     discountCodesApplicable = getApplicableDiscountCombos(
-        eligible_list, newCustomer, reg.student,
-        customer=customer, addOn=False, cannotCombine=False, dateTime=reg.dateTime
+        eligible_list, newCustomer, student, customer=customer, addOn=False,
+        cannotCombine=False, dateTime=reg.dateTime
     )
     discountCodesApplicable.sort(key=lambda x: x.code.category.order)
 
@@ -145,7 +154,7 @@ def getBestDiscount(sender, **kwargs):
     # compared against the base price, and there is no need to allocate across items since
     # only one code will potentially be applied.
     uncombinedCodesApplicable = getApplicableDiscountCombos(
-        eligible_list, newCustomer, reg.student,
+        eligible_list, newCustomer, student,
         customer=customer, addOn=False, cannotCombine=True, dateTime=reg.dateTime
     )
 
@@ -186,6 +195,10 @@ def applyTemporaryDiscount(sender, **kwargs):
     logger.debug('Signal fired to apply discounts.')
 
     reg = kwargs.pop('registration', None)
+    if not reg:
+        invoice = kwargs.get('invoice', None)
+        reg = Registration.objects.filter(invoice=invoice).first()
+
     discount = kwargs.pop('discount', None)
     discountAmount = kwargs.pop('discount_amount', None)
 
@@ -193,12 +206,12 @@ def applyTemporaryDiscount(sender, **kwargs):
         logger.warning('Incomplete information passed, discounts not applied.')
         return
 
-    obj, created = TemporaryRegistrationDiscount.objects.update_or_create(
+    obj = RegistrationDiscount.objects.update_or_create(
         registration=reg,
         discount=discount,
-        defaults={'discountAmount': discountAmount, },
-    )
-    logger.debug('Discount applied.')
+        defaults={'discountAmount': discountAmount, 'applied': False},
+    )[0]
+    logger.debug('Temporary discount record created.')
     return obj
 
 
@@ -211,23 +224,33 @@ def getAddonItems(sender, **kwargs):
     logger.debug('Signal fired to request free add-ons.')
 
     reg = kwargs.pop('registration', None)
+    invoice = kwargs.get('invoice', None)
+    customer_final = kwargs.pop('customer_final', False)
+
     if not reg:
+        reg = Registration.objects.filter(invoice=invoice).first()
+
+    if not reg or not invoice:
         logger.warning('No registration passed, addons not applied.')
         return
 
     newCustomer = True
-    customer = Customer.objects.filter(email=reg.email, first_name=reg.firstName, last_name=reg.lastName).first()
-    if (customer and customer.numEventRegistrations > 0) or sender != RegistrationSummaryView:
+    customer = Customer.objects.filter(
+        email=invoice.email, first_name=invoice.firstName, last_name=invoice.lastName
+    ).first()
+    if (customer and customer.numEventRegistrations > 0) or not customer_final:
         newCustomer = False
 
     # No need to get all objects, just the ones that could qualify one for an add-on
-    cart_object_list = reg.temporaryeventregistration_set.filter(dropIn=False).filter(
+    cart_object_list = reg.eventregistration_set.filter(dropIn=False).filter(
         Q(event__series__pricingTier__isnull=False) |
         Q(event__publicevent__pricingTier__isnull=False)
     )
 
+    student = getattr(cart_object_list.first(), 'student', False)
+
     availableAddons = getApplicableDiscountCombos(
-        cart_object_list, newCustomer, reg.student,
+        cart_object_list, newCustomer, student,
         customer=customer, addOn=True, dateTime=reg.dateTime
     )
     return [x.code.name for x in availableAddons]
@@ -242,23 +265,21 @@ def applyFinalDiscount(sender, **kwargs):
     logger.debug('Signal fired to finalize application of discounts.')
 
     reg = kwargs.pop('registration', None)
+    if not reg:
+        invoice = kwargs.get('invoice', None)
+        reg = Registration.objects.filter(invoice=invoice).first()
 
     if not reg:
         logger.debug('No registration passed, discounts not applied.')
         return
 
-    trds = TemporaryRegistrationDiscount.objects.filter(registration=reg.temporaryRegistration)
-
-    obj = None
+    trds = RegistrationDiscount.objects.filter(registration=reg)
     for temp_discount in trds:
-        obj = RegistrationDiscount.objects.create(
-            registration=reg,
-            discount=temp_discount.discount,
-            discountAmount=temp_discount.discountAmount,
-        )
+        temp_discount.applied = True
+        temp_discount.save()
 
     logger.debug('Discounts applied.')
-    return obj
+    return trds
 
 
 @receiver(get_eventregistration_data)

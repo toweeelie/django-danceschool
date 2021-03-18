@@ -1,8 +1,8 @@
 from django.contrib.auth.models import User
-from django.utils.encoding import force_text
+from django.utils.encoding import force_str
 from django.utils.html import format_html
 from django.db.models import Q
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from dal import autocomplete
 from calendar import month_name
@@ -32,7 +32,7 @@ class UserAutoComplete(autocomplete.Select2QuerySetView):
         return qs
 
     def get_result_label(self, result):
-        return force_text(result.get_full_name() + ': ' + result.email)
+        return force_str(result.get_full_name() + ': ' + result.email)
 
 
 class CustomerAutoComplete(autocomplete.Select2QuerySetView):
@@ -159,4 +159,4 @@ class StaffMemberAutoComplete(autocomplete.Select2QuerySetView):
             lastName = ' '.join(text.split(' ')[1:])
             return self.get_queryset().create(**{'translations__firstName': firstName, 'translations__lastName': lastName})
         else:
-            return super(StaffMemberAutoComplete, self).create_object(text)
+            return super().create_object(text)

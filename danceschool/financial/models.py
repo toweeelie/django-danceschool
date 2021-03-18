@@ -2,18 +2,16 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from django.core.validators import MinValueValidator, MaxValueValidator
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
 from polymorphic.models import PolymorphicModel
 from filer.fields.file import FilerFileField
 from filer.models import Folder
 import math
-from djchoices import DjangoChoices, ChoiceItem
 from calendar import day_name
 from datetime import time, timedelta
 from dateutil.relativedelta import relativedelta
-from jsonfield import JSONField
 from intervaltree import IntervalTree
 
 from danceschool.core.models import (
@@ -145,7 +143,7 @@ class TransactionParty(models.Model):
             elif self.location:
                 self.name = self.location.name
 
-        super(TransactionParty, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         if self.name:
@@ -180,15 +178,15 @@ class RepeatedExpenseRule(PolymorphicModel):
     and instructors, as well as generic repeated expenses.
     '''
 
-    class RateRuleChoices(DjangoChoices):
-        hourly = ChoiceItem('H', _('Per hour'))
-        daily = ChoiceItem('D', _('Per day of scheduled events'))
-        weekly = ChoiceItem('W', _('Per week'))
-        monthly = ChoiceItem('M', _('Per month'))
+    class RateRuleChoices(models.TextChoices):
+        hourly = ('H', _('Per hour'))
+        daily = ('D', _('Per day of scheduled events'))
+        weekly = ('W', _('Per week'))
+        monthly = ('M', _('Per month'))
 
-    class MilestoneChoices(DjangoChoices):
-        start = ChoiceItem('S', _('First occurrence starts'))
-        end = ChoiceItem('E', _('Last occurrence ends'))
+    class MilestoneChoices(models.TextChoices):
+        start = ('S', _('First occurrence starts'))
+        end = ('E', _('Last occurrence ends'))
 
     rentalRate = models.FloatField(
         _('Expense Rate'), validators=[MinValueValidator(0)], help_text=_('In default currency')
@@ -406,11 +404,14 @@ class RepeatedExpenseRule(PolymorphicModel):
         startTime = tree.begin()
         endTime = tree.end()
 
-        overlapping = self.expenseitem_set.filter(
-            (models.Q(periodStart__lte=endTime) & models.Q(periodStart__gte=startTime)) |
-            (models.Q(periodEnd__gte=startTime) & models.Q(periodEnd__lte=endTime)) |
-            (models.Q(periodStart__lte=startTime) & models.Q(periodEnd__gte=endTime))
-        )
+        if startTime and endTime:
+            overlapping = self.expenseitem_set.filter(
+                (models.Q(periodStart__lte=endTime) & models.Q(periodStart__gte=startTime)) |
+                (models.Q(periodEnd__gte=startTime) & models.Q(periodEnd__lte=endTime)) |
+                (models.Q(periodStart__lte=startTime) & models.Q(periodEnd__gte=endTime))
+            )
+        else:
+            overlapping = self.expenseitem_set.none()
 
         for item in overlapping:
             tree.chop(item.periodStart, item.periodEnd)
@@ -477,7 +478,7 @@ class RepeatedExpenseRule(PolymorphicModel):
         ''' This should be overridden for child classes '''
         return '%s %s' % (
             self.rentalRate,
-            self.RateRuleChoices.values.get(self.applyRateRule, self.applyRateRule)
+            self.get_applyRateRule_display(),
         )
     ruleName.fget.short_description = _('Rule name')
 
@@ -686,7 +687,7 @@ class GenericRepeatedExpense(RepeatedExpenseRule):
                 'Either a start date or an "up to __ days in the past" limit is required ' +
                 'for repeated expense rules that are not associated with a venue or a staff member.'
             ))
-        super(GenericRepeatedExpense, self).clean()
+        super().clean()
 
     def generateExpenses(self, request=None, datetimeTuple=None):
         from .helpers import createGenericExpenseItems
@@ -812,9 +813,7 @@ class ExpenseItem(models.Model):
     # is used.
     accrualDate = models.DateTimeField(_('Accrual date'))
 
-    # PostgreSQL can store arbitrary additional information associated with this customer
-    # in a JSONfield, but to remain database agnostic we are using django-jsonfield
-    data = JSONField(_('Additional data'), default={}, blank=True)
+    data = models.JSONField(_('Additional data'), default=dict, blank=True)
 
     @property
     def netExpense(self):
@@ -908,7 +907,7 @@ class ExpenseItem(models.Model):
         if self.hours and self.wageRate and not self.total:
             self.total = self.hours * self.wageRate
 
-        super(ExpenseItem, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
         self.__approved = self.approved
         self.__paid = self.paid
         self.__approvalDate = self.approvalDate
@@ -942,7 +941,7 @@ class ExpenseItem(models.Model):
         Permit easy checking to determine if the object
         already exists and has changed on saving
         '''
-        super(self.__class__, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.__approved = self.approved
         self.__paid = self.paid
         self.__approvalDate = self.approvalDate
@@ -1029,7 +1028,7 @@ class RevenueItem(models.Model):
     # With the invoice system in the core app, Revenue Items need only link with Invoice Items
     invoiceItem = models.OneToOneField(
         InvoiceItem, null=True, blank=True, verbose_name=_('Associated invoice item'),
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
     )
 
     event = models.ForeignKey(
@@ -1070,9 +1069,7 @@ class RevenueItem(models.Model):
     # is used.
     accrualDate = models.DateTimeField(_('Accrual date'))
 
-    # PostgreSQL can store arbitrary additional information associated with this customer
-    # in a JSONfield, but to remain database agnostic we are using django-jsonfield
-    data = JSONField(_('Additional data'), default={}, blank=True)
+    data = models.JSONField(_('Additional data'), default=dict, blank=True)
 
     @property
     def relatedItems(self):
@@ -1111,10 +1108,10 @@ class RevenueItem(models.Model):
         # is the same as the reported month of the event/series by accruing to the start date of the first
         # occurrence in that month.
         if not self.accrualDate:
-            if self.invoiceItem and self.invoiceItem.finalEventRegistration:
+            if self.invoiceItem and getattr(self.invoiceItem, 'eventRegistration', None):
                 min_event_time = (
-                    self.invoiceItem.finalEventRegistration.event.eventoccurrence_set.filter(
-                        startTime__month=self.invoiceItem.finalEventRegistration.event.month
+                    self.invoiceItem.eventRegistration.event.eventoccurrence_set.filter(
+                        startTime__month=self.invoiceItem.eventRegistration.event.month
                     ).first().startTime
                 )
                 self.accrualDate = min_event_time
@@ -1136,10 +1133,10 @@ class RevenueItem(models.Model):
 
         # Now, set the registration property and check that this item is not attributed
         # to multiple categories.
-        if self.invoiceItem and self.invoiceItem.finalEventRegistration:
-            self.event = self.invoiceItem.finalEventRegistration.event
-        elif self.invoiceItem and self.invoiceItem.temporaryEventRegistration:
-            self.event = self.invoiceItem.temporaryEventRegistration.event
+        if self.invoiceItem and getattr(self.invoiceItem,'eventRegistration', None):
+            self.event = self.invoiceItem.eventRegistration.event
+        elif self.invoiceItem and getattr(self.invoiceItem,'eventRegistration', None):
+            self.event = self.invoiceItem.eventRegistration.event
 
         # If no grossTotal is reported, use the net total.  If no net total is reported, use the grossTotal
         if self.grossTotal is None and self.total:
@@ -1147,7 +1144,7 @@ class RevenueItem(models.Model):
         if self.total is None and self.grossTotal:
             self.total = self.grossTotal
 
-        super(RevenueItem, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
         self.__received = self.received
         self.__receivedDate = self.receivedDate
 
@@ -1179,7 +1176,7 @@ class RevenueItem(models.Model):
         Permit easy checking to determine if the object
         already exists and has changed on saving
         '''
-        super(self.__class__, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.__received = self.received
         self.__receivedDate = self.receivedDate
 

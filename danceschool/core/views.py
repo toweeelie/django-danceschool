@@ -1,7 +1,6 @@
 from django.http import HttpResponseRedirect, Http404, HttpResponseBadRequest, HttpResponse
-from django.shortcuts import get_object_or_404, get_list_or_404
+from django.shortcuts import get_object_or_404
 from django.conf import settings
-from django.core import serializers
 from django.core.exceptions import ObjectDoesNotExist
 from django.urls import reverse
 from django.core.serializers.json import DjangoJSONEncoder
@@ -9,8 +8,8 @@ from django.views.generic import (
     FormView, CreateView, UpdateView, DetailView, TemplateView, ListView,
     RedirectView
 )
-from django.db.models import Min, Q, Count
-from django.utils.translation import ugettext_lazy as _
+from django.db.models import Min, Q, Count, F, Case, When, BooleanField
+from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 from django.contrib.auth.models import User
 from django.contrib import messages
@@ -34,12 +33,12 @@ import json
 from testapp.forms import QuickCustomerRegForm
 
 from .models import (
-    Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
+    ClassDescription, Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
     StaffMember, Instructor, Invoice, Customer, EventCheckIn
 )
 from .forms import (
     SubstituteReportingForm, StaffMemberBioChangeForm, RefundForm, EmailContactForm,
-    RepeatEventForm, InvoiceNotificationForm, CreateInvoiceForm, EventAutocompleteForm
+    RepeatEventForm, InvoiceNotificationForm, EventAutocompleteForm
 )
 from .constants import getConstant, EMAIL_VALIDATION_STR, REFUND_VALIDATION_STR
 from .mixins import (
@@ -80,7 +79,7 @@ class EventRegistrationSelectView(PermissionRequiredMixin, EventOrderMixin, Form
         )
 
     def get_context_data(self, **kwargs):
-        context = super(EventRegistrationSelectView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         queryset = self.get_queryset()
         context.update({'queryset': queryset, 'object_list': queryset, 'event_list': queryset})
         return context
@@ -111,11 +110,15 @@ class EventRegistrationSummaryView(PermissionRequiredMixin, SiteHistoryMixin, De
         self.set_return_page('viewregistrations', _('View Registrations'), event_id=self.object.id)
 
         registrations = EventRegistration.objects.filter(
-            event=self.object, cancelled=False
+            event=self.object, cancelled=False,
+            registration__final=True,
         ).select_related(
             'registration', 'event', 'customer',
-            'invoiceitem', 'role', 'registration__invoice',
-        ).order_by('registration__firstName', 'registration__lastName')
+            'invoiceItem', 'role', 'registration__invoice',
+        ).order_by(
+            F('customer__last_name').asc(nulls_last=True),
+            F('customer__first_name').asc(nulls_last=True),
+        )
 
         extras_dict = {x: [] for x in registrations.values_list('id', flat=True)}
 
@@ -132,7 +135,7 @@ class EventRegistrationSummaryView(PermissionRequiredMixin, SiteHistoryMixin, De
             'extras': extras_dict,
         }
         context.update(kwargs)
-        context =  super(EventRegistrationSummaryView, self).get_context_data(**context)
+        context = super().get_context_data(**context)
         context['form'] = QuickCustomerRegForm(user = self.request.user, **kwargs)
         return context
 
@@ -238,26 +241,32 @@ class EventRegistrationJsonView(PermissionRequiredMixin, ListView):
 
         # These are all the various attributes that we want to be populated in the response JSON
         attributeList = [
-            'id', 'dropIn', 'price', 'netPrice', 'refundFlag', 'warningFlag',
-            'checkedIn',
-            ('event', ['id', 'name', 'url', 'getNextOccurrenceForDate']),
+            'id', 'dropIn', 'refundFlag', 'warningFlag',
+            'checkedIn', 'occurrenceId', 'occurrenceStartTime', 'student',
+            ('customer', ['id', 'fullName', 'email', 'numClassSeries']),
+            ('event', ['id', 'name', 'url',]),
             ('registration', [
-                'id', 'priceWithDiscount', 'student', 'refundFlag', 'totalPrice',
-                'fullName', 'discounted', 'url',
-                ('customer', ['id', 'fullName', 'email', 'numClassSeries']),
-                ('invoice', ['id', 'adjustments', 'outstandingBalance', 'statusLabel', 'url']),
+                'id', 'refundFlag', 'grossTotal', 'total', 'discounted', 'url',
+                ('invoice', [
+                    'id', 'grossTotal', 'total', 'adjustments', 'taxes', 'fees',
+                    'outstandingBalance', 'statusLabel', 'url'
+                ]),
             ]),
-            ('invoiceitem', [
-                'id', 'adjustments', 'revenueMismatch', 'revenueNotYetReceived',
-                'revenueReceived', 'revenueReported'
+            ('invoiceItem', [
+                'id', 'grossTotal', 'total', 'adjustments', 'taxes', 'fees',
+                'revenueMismatch', 'revenueNotYetReceived', 'revenueReceived',
+                'revenueReported'
             ]),
             ('role', ['id', 'name']),
         ]
 
-        extras = get_eventregistration_data.send(sender=EventRegistrationJsonView, eventregistrations=queryset)
-        extras_dict = {x: [] for x in queryset.values_list('id', flat=True)}
-        for k, v in chain.from_iterable([x.items() for x in [y[1] for y in extras if isinstance(y[1], dict)]]):
-            extras_dict[k].extend(v)
+        extras_dict = {}
+
+        if queryset:
+            extras = get_eventregistration_data.send(sender=EventRegistrationJsonView, eventregistrations=queryset)
+            extras_dict = {x: [] for x in queryset.values_list('id', flat=True)}
+            for k, v in chain.from_iterable([x.items() for x in [y[1] for y in extras if isinstance(y[1], dict)]]):
+                extras_dict[k].extend(v)
 
         this_listing = [
             recurse_listing(
@@ -280,11 +289,16 @@ class EventRegistrationJsonView(PermissionRequiredMixin, ListView):
         if getattr(self, 'customer', None):
             filters['customer'] = self.customer
 
+        dropInFilters = Q(dropIn=False) | (Q(dropIn=True) & Q(occurrences__id=F('occurrenceId')))
+
         registrations = EventRegistration.objects.filter(
             **filters
-        ).distinct().select_related(
+        ).annotate(
+            occurrenceId=F('event__eventoccurrence__id'),
+            occurrenceStartTime=F('event__eventoccurrence__startTime'),
+        ).filter(dropInFilters).select_related(
             'registration', 'event', 'customer',
-            'invoiceitem', 'role', 'registration__invoice',
+            'invoiceItem', 'role', 'registration__invoice',
         ).order_by('registration__firstName', 'registration__lastName')
         return registrations
 
@@ -303,7 +317,7 @@ class SubmissionRedirectView(SiteHistoryMixin, TemplateView):
         as specified in the site settings.
         '''
 
-        context = super(SubmissionRedirectView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         redirect_url = unquote(self.request.GET.get('redirect_url', ''))
         if not redirect_url:
@@ -352,7 +366,7 @@ class ViewInvoiceView(AccessMixin, FinancialContextMixin, SiteHistoryMixin, Deta
         return self.handle_no_permission()
 
     def get_context_data(self, **kwargs):
-        context = super(ViewInvoiceView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update({
             'invoice': self.object,
             'payments': self.get_payments(),
@@ -420,50 +434,21 @@ class InvoiceNotificationView(FinancialContextMixin, AdminSuccessURLMixin,
         self.toNotify = toNotify
         self.cannotNotify = cannotNotify
 
-        return super(InvoiceNotificationView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def get_form_kwargs(self):
         ''' Pass the set of invoices to the form for creation '''
-        kwargs = super(InvoiceNotificationView, self).get_form_kwargs()
+        kwargs = super().get_form_kwargs()
         kwargs['invoices'] = self.toNotify
         return kwargs
 
     def get_context_data(self, **kwargs):
-        context = super(InvoiceNotificationView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update({
             'toNotify': self.toNotify,
             'cannotNotify': self.cannotNotify,
         })
         return context
-
-
-class CreateInvoiceView(UserFormKwargsMixin, FormView):
-    form_class = CreateInvoiceForm
-
-    def form_valid(self, form):
-        regSession = self.request.session[REG_VALIDATION_STR]
-        reg_id = regSession["temp_reg_id"]
-        tr = TemporaryRegistration.objects.get(id=reg_id)
-
-        # Create a new Invoice if one does not already exist.
-        new_invoice = Invoice.get_or_create_from_registration(tr)
-
-        if form.cleaned_data.get('invoiceSent'):
-            # Do not finalize this registration, but set the expiration date
-            # on the TemporaryRegistration such that it will not be deleted
-            # until after the last series ends, in case this person does not make
-            # a payment right away.  This will also hold this individual's spot
-            # in anything for which they have registered indefinitely.
-            payerEmail = form.cleaned_data['invoicePayerEmail']
-            tr.expirationDate = tr.lastEndTime
-            tr.save()
-            new_invoice.sendNotification(payerEmail=payerEmail, newRegistration=True)
-
-        return HttpResponseRedirect(reverse('registration'))
-
-    def form_invalid(self, form):
-        ''' TODO: Figure out better handling for this case. '''
-        return HttpResponseBadRequest()
 
 
 #################################
@@ -490,10 +475,10 @@ class RefundConfirmationView(FinancialContextMixin, AdminSuccessURLMixin, Permis
 
         if request.GET.get('confirmed', '').lower() == 'true' and self.payments:
             return self.process_refund()
-        return super(RefundConfirmationView, self).get(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
-        context = super(RefundConfirmationView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         total_refund_amount = self.form_data['total_refund_amount']
         initial_refund_amount = self.form_data['initial_refund_amount']
@@ -516,6 +501,12 @@ class RefundConfirmationView(FinancialContextMixin, AdminSuccessURLMixin, Permis
         initial_refund_amount = self.form_data['initial_refund_amount']
         amount_to_refund = max(total_refund_amount - initial_refund_amount, 0)
 
+        # Identify the items to which refunds should be allocated and update the adjustments line
+        # for those items.  Fees are also allocated across the items for which the refund was requested.
+        refund_items = self.form_data.items()
+        item_refund_data = [(k.split('_')[2], v) for k, v in refund_items if k.startswith('item_refundamount_')]
+        adjustment_amounts = {x[0]: float(x[1]) for x in item_refund_data}
+
         # Keep track of total refund fees as well as how much reamins to be
         # refunded as we iterate through payments to refund them.
         remains_to_refund = amount_to_refund
@@ -532,7 +523,7 @@ class RefundConfirmationView(FinancialContextMixin, AdminSuccessURLMixin, Permis
             # This dictionary will be updated and then added to refund_data for
             # this invoice whether the refund is successful or not
             this_refund_response_data = {
-                'datetime': timezone.now(),
+                'datetime': str(ensure_localtime(timezone.now())),
                 'id': this_payment.recordId,
                 'methodName': this_payment.methodName,
                 'amount': this_refund_amount,
@@ -560,10 +551,6 @@ class RefundConfirmationView(FinancialContextMixin, AdminSuccessURLMixin, Permis
                     'response': [dict(this_refund_response[0]), ],
                 })
 
-                # Incrementally update the invoice's refunded amount
-                self.invoice.adjustments -= amount_refunded
-                self.invoice.amountPaid -= amount_refunded
-                self.invoice.fees += fees
                 remains_to_refund -= amount_refunded
 
             else:
@@ -586,8 +573,22 @@ class RefundConfirmationView(FinancialContextMixin, AdminSuccessURLMixin, Permis
                 messages.error(self.request, this_refund_response_data.get('errorMessage'))
 
                 self.invoice.data['refunds'] = refund_data
-                self.invoice.save()
-                self.invoice.allocateFees()
+
+                total_applied = sum([x.get('refundAmount', 0) for x in refund_data if x.get('status') == 'success'])
+                total_fees = sum([x.get('fees', 0) for x in refund_data if x.get('status') == 'success'])
+
+                # Allocate whatever amount was previously successful across the
+                # items for which the refund was requested.
+                self.invoice.amountPaid -= total_applied
+
+                self.invoice.updateTotals(
+                    save=True,
+                    allocateAmounts={
+                        'adjustments': -1*total_applied,
+                        'fees': total_fees,
+                    },
+                    allocateWeights=adjustment_amounts
+                )
                 self.request.session.pop(REFUND_VALIDATION_STR, None)
                 return HttpResponseRedirect(self.get_success_url())
 
@@ -604,28 +605,43 @@ class RefundConfirmationView(FinancialContextMixin, AdminSuccessURLMixin, Permis
                 )
 
         self.invoice.data['refunds'] = refund_data
-        if self.invoice.total + self.invoice.adjustments == 0:
+
+        total_applied = sum([x.get('refundAmount', 0) for x in refund_data if x.get('status') == 'success'])
+        total_fees = sum([x.get('fees', 0) for x in refund_data if x.get('status') == 'success'])
+
+        self.invoice.amountPaid -= total_applied
+
+        if abs(
+            self.invoice.total + (self.invoice.taxes * self.invoice.buyerPaysSalesTax) +
+            self.invoice.adjustments - total_applied
+        ) < 0.01:
             self.invoice.status = Invoice.PaymentStatus.fullRefund
-        self.invoice.save()
 
-        # Identify the items to which refunds should be allocated and update the adjustments line
-        # for those items.  Fees are also allocated across the items for which the refund was requested.
-        refund_items = self.form_data.items()
-        item_refund_data = [(k.split('_')[2], v) for k, v in refund_items if k.startswith('item_refundamount_')]
-        for item_request in item_refund_data:
-            this_item = self.invoice.invoiceitem_set.get(id=item_request[0])
-            this_item.adjustments = -1 * float(item_request[1])
-            this_item.save()
+        # Allocate whatever amount was previously successful across the
+        # items for which the refund was requested.
+        items = self.invoice.updateTotals(
+            save=True,
+            allocateAmounts={
+                'adjustments': -1*total_applied,
+                'fees': total_fees,
+            },
+            allocateWeights=adjustment_amounts
+        )
 
-            add_taxes = this_item.taxes if self.invoice.buyerPaysSalesTax else 0
+        # If the refund is a complete refund and is associated with a registration,
+        # then cancel the EventRegistration entirely.
+        eventregs = EventRegistration.objects.filter(invoiceItem__in=items)
+        for this_item in items:
+            this_eventreg = eventregs.filter(invoiceItem=this_item).first()
 
-            # If the refund is a complete refund, then cancel the EventRegistration entirely.
-            if abs(this_item.total + add_taxes + this_item.adjustments) < 0.01 and this_item.finalEventRegistration:
-                this_item.finalEventRegistration.cancelled = True
-                this_item.finalEventRegistration.save()
-
-        # Ensure that all fees are allocated appropriately
-        self.invoice.allocateFees()
+            if (
+                abs(
+                    this_item.total + this_item.adjustments +
+                    (this_item.taxes * self.invoice.buyerPaysSalesTax)
+                ) < 0.01 and this_eventreg
+            ):
+                this_eventreg.cancelled = True
+                this_eventreg.save()
 
         self.request.session.pop(REFUND_VALIDATION_STR, None)
         return HttpResponseRedirect(self.get_success_url())
@@ -638,15 +654,13 @@ class RefundProcessingView(FinancialContextMixin, PermissionRequiredMixin, Staff
     model = Invoice
 
     def get_context_data(self, **kwargs):
-        context = super(RefundProcessingView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update({
             'invoice': self.object,
             'payments': self.get_payments(),
         })
-        if self.object.finalRegistration:
-            context['registration'] = self.object.finalRegistration
-        elif self.object.temporaryRegistration:
-            context['registration'] = self.object.temporaryRegistration
+        if getattr(self.object, 'registration', None):
+            context['registration'] = self.object.registration
 
         return context
 
@@ -682,7 +696,7 @@ class EmailConfirmationView(AdminSuccessURLMixin, PermissionRequiredMixin, Templ
             return HttpResponseRedirect(reverse('emailStudents'))
         if request.GET.get('confirmed', '').lower() == 'true':
             return self.send_email()
-        return super(EmailConfirmationView, self).get(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
     def send_email(self):
         subject = self.form_data.pop('subject')
@@ -763,7 +777,7 @@ class EmailConfirmationView(AdminSuccessURLMixin, PermissionRequiredMixin, Templ
         return HttpResponseRedirect(self.get_success_url())
 
     def get_context_data(self, **kwargs):
-        context = super(EmailConfirmationView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update(self.form_data)
 
         month = self.form_data['month']
@@ -828,7 +842,7 @@ class SendEmailView(PermissionRequiredMixin, UserFormKwargsMixin, FormView):
             except ValueError:
                 return HttpResponseBadRequest(_('Invalid customer ids passed'))
 
-        return super(SendEmailView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def get_form_kwargs(self, **kwargs):
         '''
@@ -865,7 +879,7 @@ class SendEmailView(PermissionRequiredMixin, UserFormKwargsMixin, FormView):
         allEvents = Event.objects.filter(startTime__gte=cutoff).order_by('-startTime')
         recentSeries = [('', 'None')] + [(x.id, '%s %s: %s' % (month_name[x.month], x.year, x.name)) for x in allEvents]
 
-        kwargs = super(SendEmailView, self).get_form_kwargs(**kwargs)
+        kwargs = super().get_form_kwargs(**kwargs)
         kwargs.update({
             "months": months,
             "recentseries": recentSeries,
@@ -878,7 +892,7 @@ class SendEmailView(PermissionRequiredMixin, UserFormKwargsMixin, FormView):
         If the user already submitted the form and decided to return from the
         confirmation page, then re-populate the form
         '''
-        initial = super(SendEmailView, self).get_initial()
+        initial = super().get_initial()
 
         form_data = self.request.session.get(EMAIL_VALIDATION_STR, {}).get('form_data', {})
         if form_data:
@@ -886,7 +900,7 @@ class SendEmailView(PermissionRequiredMixin, UserFormKwargsMixin, FormView):
         return initial
 
     def get_context_data(self, **kwargs):
-        context = super(SendEmailView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         context.update({
             'form_title': _('Email Students'),
@@ -977,14 +991,14 @@ class AccountProfileView(LoginRequiredMixin, DetailView):
                 'customer': user.customer,
                 'customer_verified': user.emailaddress_set.filter(email=user.customer.email, verified=True).exists(),
             })
-            context['customer_eventregs'] = EventRegistration.objects.filter(registration__customer=user.customer)
+            context['customer_eventregs'] = EventRegistration.objects.filter(customer=user.customer)
             if user.customer.customer_id > 1:
                 context.update({
                     'subscription': self.get_subscription(user.customer.sheet_id,user.customer.customer_id),
                 })
 
         context['verified_eventregs'] = EventRegistration.objects.filter(
-            registration__customer__email__in=[x.email for x in context['verified_emails']]
+            customer__email__in=[x.email for x in context['verified_emails']]
         ).exclude(
             id__in=[x.id for x in context.get('customer_eventregs', [])]
         )
@@ -1018,7 +1032,7 @@ class AccountProfileView(LoginRequiredMixin, DetailView):
                     item[1].pop('customer', None)
                     context.update(item[1])
 
-        return super(AccountProfileView, self).get_context_data(**context)
+        return super().get_context_data(**context)
 
 
 class OtherAccountProfileView(PermissionRequiredMixin, AccountProfileView):
@@ -1067,10 +1081,13 @@ class OtherInstructorStatsView(InstructorStatsView):
 
     def get_object(self, queryset=None):
         if 'first_name' in self.kwargs and 'last_name' in self.kwargs:
+            first_name = re.sub('^_$','', self.kwargs['first_name'])
+            last_name = re.sub('^_$','', self.kwargs['last_name'])
+
             return get_object_or_404(
                 StaffMember.objects.translated('en').distinct().filter(
-                    **{'translations__firstName': unquote_plus(self.kwargs['first_name']).replace('_', ' '),
-                        'translations__lastName': unquote_plus(self.kwargs['last_name']).replace('_', ' ')})
+                    **{'translations__firstName': unquote_plus(first_name).replace('_', ' '),
+                        'translations__lastName': unquote_plus(last_name).replace('_', ' ')})
                     )
         else:
             return None
@@ -1097,7 +1114,7 @@ class IndividualClassReferralView(ReferralInfoMixin, RedirectView):
             return reverse('classView', kwargs=kwargs)
 
 
-class IndividualEventReferralView(ReferralInfoMixin, RedirectView):
+class IndividualPublicEventReferralView(ReferralInfoMixin, RedirectView):
 
     def get_redirect_url(self, *args, **kwargs):
         if (
@@ -1114,10 +1131,11 @@ class IndividualEventReferralView(ReferralInfoMixin, RedirectView):
             return reverse('eventView', kwargs=kwargs)
 
 
-class IndividualClassView(ReferralInfoMixin, FinancialContextMixin, TemplateView):
-    template_name = 'core/individual_class.html'
+class IndividualEventView(ReferralInfoMixin, FinancialContextMixin, TemplateView):
+    model_class = Event
+    template_name = 'core/event_pages/individual_event.html'
 
-    def get(self, request, *args, **kwargs):
+    def dispatch(self, request, *args, **kwargs):
         # These are passed via the URL
         year = self.kwargs.get('year')
         month = self.kwargs.get('month')
@@ -1130,75 +1148,91 @@ class IndividualClassView(ReferralInfoMixin, FinancialContextMixin, TemplateView
             except ValueError:
                 raise Http404(_('Invalid month.'))
 
+        model_class = getattr(self, 'model_class', Event)
+
         filters = ~Q(status=Event.RegStatus.hidden) \
-            & ~Q(status=Event.RegStatus.linkOnly) \
-            & Q(classDescription__slug=slug)
+            & ~Q(status=Event.RegStatus.linkOnly)
+        if model_class == Series:
+            filters = filters & Q(classDescription__slug=slug)
+        elif model_class == PublicEvent:
+            filters = filters & Q(slug=slug)
+
         if year and month:
             filters = filters & Q(year=year or None) & Q(month=month_number or None)
         if session_slug:
             filters = filters & Q(session__slug=session_slug)
 
-        seriesset = get_list_or_404(Series, filters)
+        passedCase = Q(endTime__lt=timezone.now())
+        if getConstant('registration__displayLimitDays') or 0 > 0:
+            passedCase = passedCase | Q(
+                startTime__gte=timezone.now() + timedelta(
+                    days=getConstant('registration__displayLimitDays')
+                )
+            )
 
-        # This will pass through to the context data by default
-        kwargs.update({'seriesset': seriesset})
+        self.event_set = model_class.objects.filter(
+            filters
+        ).annotate(
+            registrationPassed=Case(
+                When(passedCase, then=True), default=False,
+                output_field=BooleanField()
+            )
+        )
 
-        # For each Series in the set, add a button to the toolbar to edit the Series details
-        if hasattr(request, 'user') and request.user.has_perm('core.change_series'):
-            for this_series in seriesset:
-                this_title = _('Edit Class Details')
-                if len(seriesset) > 1:
-                    this_title += ' (#%s)' % this_series.id
-                reverse_core_series_change = reverse('admin:core_series_change', args=([this_series.id, ]))
-                request.toolbar.add_button(this_title, reverse_core_series_change, side=RIGHT)
+        if not self.event_set:
+            raise Http404(_('No events found.'))
 
-        return super(IndividualClassView, self).get(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
-
-class IndividualEventView(ReferralInfoMixin, FinancialContextMixin, TemplateView):
-    template_name = 'core/individual_event.html'
+    def get_template_names(self):
+        templates = [x.template for x in self.event_set if getattr(x, 'template', None)]
+        if templates:
+            return [templates[0],]
+        else:
+            return super().get_template_names()
 
     def get(self, request, *args, **kwargs):
-        # These are passed via the URL
-        year = self.kwargs.get('year', timezone.now().year)
-        month = self.kwargs.get('month', 0)
-        session_slug = self.kwargs.get('session_slug')
-        slug = self.kwargs.get('slug', '')
 
-        if month:
-            try:
-                month_number = list(month_name).index(month or 0)
-            except ValueError:
-                raise Http404(_('Invalid month.'))
+        # This will pass through to the context data by default
+        kwargs.update({'event_set': self.event_set})
 
-        filters = ~Q(status=Event.RegStatus.hidden) \
-            & ~Q(status=Event.RegStatus.linkOnly) \
-            & Q(slug=slug)
-        if year and month:
-            filters = filters & Q(year=year or None) & Q(month=month_number or None)
-        if session_slug:
-            filters = filters & Q(session__slug=session_slug)
+        model_lower = getattr(self, 'model_class', Event).__name__.lower()
+        app_name = getattr(self, 'app_name', 'core')
 
-        eventset = get_list_or_404(PublicEvent, filters)
+        # For each Event in the set, add a button to the toolbar to edit the Event details
+        if (
+            hasattr(request, 'user') and
+            request.user.has_perm('%s.change_%s' % (app_name, model_lower))
+        ):
+            for this_event in self.event_set:
+                this_title = _('Edit Event Details')
+                if len(self.event_set) > 1:
+                    this_title += ' (#%s)' % this_event.id
+                change_link = reverse(
+                    'admin:%s_%s_change' % (app_name, model_lower),
+                    args=([this_event.id, ])
+                )
+                request.toolbar.add_button(this_title, change_link, side=RIGHT)
 
+        return super().get(request, *args, **kwargs)
+
+
+class IndividualClassView(IndividualEventView):
+    model_class = Series
+    template_name = 'core/event_pages/individual_class.html'
+
+
+class IndividualPublicEventView(IndividualEventView):
+    model_class = PublicEvent
+    template_name = 'core/event_pages/individual_event.html'
+
+    def get(self, request, *args, **kwargs):
         # If an alternative link is given by one or more of these events, then redirect to that.
-        overrideLinks = [x.link for x in eventset if x.link]
+        overrideLinks = [x.link for x in self.event_set if getattr(x, 'link', None)]
         if overrideLinks:
             return HttpResponseRedirect(overrideLinks[0])
 
-        # This will pass through to the context data by default
-        kwargs.update({'eventset': eventset})
-
-        # For each Event in the set, add a button to the toolbar to edit the Event details
-        if hasattr(request, 'user') and request.user.has_perm('core.change_publicevent'):
-            for this_event in eventset:
-                this_title = _('Edit Event Details')
-                if len(eventset) > 1:
-                    this_title += ' (#%s)' % this_event.id
-                reverse_core_publicevent_change = reverse('admin:core_publicevent_change', args=([this_event.id, ]))
-                request.toolbar.add_button(this_title, reverse_core_publicevent_change, side=RIGHT)
-
-        return super(IndividualEventView, self).get(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
 
 #####################################
@@ -1231,10 +1265,10 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
         except ValueError:
             return HttpResponseBadRequest(_('Invalid ids passed'))
 
-        return super(RepeatEventsView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
-        context = super(RepeatEventsView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update({
             'events': self.queryset,
         })
@@ -1320,7 +1354,7 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
                 # updated properly.
                 event.save()
 
-            return super(RepeatEventsView, self).form_valid(form)
+            return super().form_valid(form)
 
 
 ############################################################
@@ -1338,7 +1372,7 @@ class SubstituteReportingView(AdminSuccessURLMixin, PermissionRequiredMixin, Use
     success_message = _('Substitute teaching reported successfully.')
 
     def get_context_data(self, **kwargs):
-        context = super(SubstituteReportingView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         context.update({
             'form_title': _('Report Substitute Teaching'),
@@ -1364,7 +1398,7 @@ class StaffMemberBioChangeView(AdminSuccessURLMixin, StaffMemberObjectMixin, Per
     success_message = _('Staff member information updated successfully.')
 
     def get_context_data(self, **kwargs):
-        context = super(StaffMemberBioChangeView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         context.update({
             'form_title': _('Update Contact Information'),
@@ -1391,7 +1425,7 @@ class StaffDirectoryView(PermissionRequiredMixin, ListView):
     ])
 
     def get_context_data(self, **kwargs):
-        context = super(StaffDirectoryView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         staff = context.get('staffmember_list', StaffMember.objects.none())
 

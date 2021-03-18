@@ -1,0 +1,93 @@
+{% load sekizai_tags i18n crispy_forms_tags static %}
+
+<div class="col-12 my-1" id="guestSearch">
+    <div class="card">
+        <div class="card-header">
+            {% trans "Guest Search" %}
+        </div>
+        <div class="card-body item">
+            {% crispy customerSearchForm %}
+        </div>
+
+        <div id="customerInfoCard" class="card-body item collapse">
+            <table id="customerInfoExample" class="d-none">
+                <tr>
+                    {% if 'core.checkin_customers' in perms %}
+                    <td>
+                        <input class="customerCheckIn registrationCheckIn" type="checkbox" name="reg_id" />
+                        <label class="customerCheckInLabel"></label>
+                    </td>
+                    {% endif %}
+                    <td><span class="customerInfoEvent"></span><br /><small><span class="customerInfoTime"></span></small></td>
+                    <td class="customerInfoRole"></td>
+                    <td class="customerInfoStudent"></td>
+                    <td class="customerInfoPaymentStatus"></td>
+                    <td class="customerInfoLinks">
+
+                        <div class="dropdown show">
+                            <a class="btn btn-sm btn-light dropdown-toggle customerRelatedLink" href="#" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                              Related Items
+                            </a>
+                            <div class="dropdown-menu customerRelatedDropdown">
+                                {% if 'core.view_all_invoices' in perms %}
+                                    <a class="dropdown-item customerInvoiceLink">{% trans "Invoice" %}</a>
+                                {% endif %}
+                                {% if 'core.change_registration' in perms %}
+                                    <a class="dropdown-item customerRegistrationLink">{% trans "Registration" %}</a>
+                                {% endif %}
+                            </div>
+                          </div>
+                    </td>
+                </tr>
+            </table>
+            <table id="guestInfoExample" class="d-none">
+                <tr>
+                    {% if 'guestlist.checkin_guests' in perms %}
+                    <td>
+                        <input class="customerCheckIn guestCheckIn" type="checkbox" name="reg_id" />
+                        <label class="customerCheckInLabel"></label>
+                    </td>
+                    {% endif %}
+                    <td class="guestInfoName"></td>
+                    <td class="guestInfoEvent"></td>
+                    <td class="guestInfoType"></td>
+                </tr>
+            </table>
+            <table id="customerInfoTable" class="table d-none">
+                <thead><tr>
+                    {% if 'core.checkin_customers' in perms %}
+                    <th>{% trans "Check-in" %}</th>
+                    {% endif %}
+                    <th>{% trans "Event" %}</th>
+                    <th>{% trans "Role" %}</th>
+                    <th>{% trans "Student" %}</th>
+                    <th>{% trans "Payment Status" %}</th>
+                    <th>{% trans "Links" %}<button class="float-right btn btn-sm" role="button" data-toggle="collapse" data-target="#customerInfoCard" aria-expanded="true" aria-controls="customerInfoCard" aria-label="Hide Table" title="Hide Table"><i class="fa fa-chevron-up" aria-hidden="true"></i></button></th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+            <table id="guestInfoTable" class="table d-none">
+                <thead><tr>
+                    {% if 'guestlist.checkin_guests' in perms %}
+                    <th>{% trans "Check-in" %}</th>
+                    {% endif %}
+                    <th>{% trans "Name" %}</th>
+                    <th>{% trans "Event" %}</th>
+                    <th>{% trans "Guest Type" %}
+                    <button class="float-right btn btn-sm" role="button" data-toggle="collapse" data-target="#customerInfoCard" aria-expanded="true" aria-controls="customerInfoCard" aria-label="Hide Table" title="Hide Table"><i class="fa fa-chevron-up" aria-hidden="true"></i></button></th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+
+{% addtoblock "js" %}
+<script type="text/javascript">
+$(document).ready(function() {
+    regParams['guestLookupEvents'] = "{{ event_list|join:',' }}".split(",");
+});
+</script>
+{% endaddtoblock %}
+

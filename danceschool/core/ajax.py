@@ -1,5 +1,5 @@
 from django.http import HttpResponse, JsonResponse
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.views.generic import View
 from django.contrib import messages
 from django.core.exceptions import ObjectDoesNotExist
@@ -144,7 +144,7 @@ class ProcessCheckInView(PermissionRequiredMixin, View):
 
         this_event = Event.objects.filter(id=event_id).prefetch_related(
             'eventoccurrence_set', 'eventregistration_set', 'eventcheckin_set',
-            'eventregistration_set__registration'
+            'eventregistration_set__registration', 'eventregistration_set__customer',
         ).first()
 
         if not this_event:
@@ -174,7 +174,8 @@ class ProcessCheckInView(PermissionRequiredMixin, View):
 
         if registrations:
             these_registrations = this_event.eventregistration_set.filter(
-                id__in=[x.get('id') for x in registrations]
+                id__in=[x.get('id') for x in registrations],
+                registration__final=True,
             )
             if these_registrations.count() < len(registrations):
                 errors.append({
@@ -284,8 +285,8 @@ class ProcessCheckInView(PermissionRequiredMixin, View):
                 occurrence=this_occurrence,
                 eventRegistration=this_event.eventregistration_set.get(id=x.get('id')),
                 cancelled=x.get('cancelled', False),
-                firstName=this_event.eventregistration_set.get(id=x.get('id')).registration.firstName,
-                lastName=this_event.eventregistration_set.get(id=x.get('id')).registration.lastName,
+                firstName=getattr(this_event.eventregistration_set.get(id=x.get('id')).customer, 'firstName', None),
+                lastName=getattr(this_event.eventregistration_set.get(id=x.get('id')).customer, 'lastName', None),
                 submissionUser=submissionUser,
             ) for x in registrations
         ] + [

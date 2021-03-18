@@ -1,7 +1,7 @@
 from cms.plugin_base import CMSPluginBase
 from cms.plugin_pool import plugin_pool
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
 from datetime import timedelta
@@ -20,7 +20,7 @@ class LatestNewsItemPlugin(PluginTemplateMixin, CMSPluginBase):
     module = _('News')
 
     def render(self, context, instance, placeholder):
-        context = super(LatestNewsItemPlugin, self).render(context, instance, placeholder)
+        context = super().render(context, instance, placeholder)
 
         listing = NewsItem.objects.all()
 

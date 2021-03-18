@@ -1,23 +1,23 @@
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.db.models import Value, CharField
 from django.db.models.query import QuerySet
 from django.db.models.functions import Concat
 
 from danceschool.core.signals import (
-    post_student_info, post_registration, apply_price_adjustments,
-    get_customer_data, check_student_info, get_eventregistration_data,
-    check_voucher
+    post_student_info, apply_price_adjustments, get_customer_data,
+    check_student_info, get_eventregistration_data, check_voucher,
+    invoice_finalized
 )
 from danceschool.core.models import (
-    Customer, Series, Registration, EventRegistration, Event
+    Customer, EventRegistration, Event, Registration
 )
 from danceschool.core.constants import getConstant, REG_VALIDATION_STR
 
 import logging
 
-from .models import Voucher, TemporaryVoucherUse, VoucherUse
+from .models import Voucher, VoucherUse
 from .helpers import awardReferrers, ensureReferralVouchersExist
 
 
@@ -32,8 +32,9 @@ def checkVoucherField(sender, **kwargs):
     '''
     logger.debug('Signal to check RegistrationContactForm handled by vouchers app.')
 
-    formData = kwargs.get('formData', {})
+    formData = kwargs.get('data', {})
     request = kwargs.get('request', {})
+    invoice = kwargs.get('invoice', None)
     registration = kwargs.get('registration', None)
     session = getattr(request, 'session', {}).get(REG_VALIDATION_STR, {})
 
@@ -56,7 +57,14 @@ def checkVoucherField(sender, **kwargs):
     if session.get('gift', '') != '':
         raise ValidationError({'gift': _('Can\'t have more than one voucher')})
 
-    eventids = [x.event.id for x in registration.temporaryeventregistration_set.exclude(dropIn=True)]
+    if not registration:
+        registration = Registration.objects.filter(invoice=invoice).first()
+    events = Event.objects.none()
+
+    if registration:
+        events = Event.objects.filter(
+            eventregistration__registration=registration
+        ).exclude(eventregistration__dropIn=True).values_list('id', flat=True)
 
     obj = Voucher.objects.filter(voucherId=id).first()
     if not obj:
@@ -72,7 +80,7 @@ def checkVoucherField(sender, **kwargs):
             obj.validate(
                 payAtDoor=getattr(registration, 'payAtDoor', False),
                 customer=customer,
-                event_list=Event.objects.filter(id__in=eventids)
+                events=events
             )
         except ValidationError as e:
             # Ensures that the error is applied to the correct field
@@ -90,6 +98,7 @@ def checkVoucherCode(sender, **kwargs):
     '''
     logger.debug('Signal to check voucher code handled by vouchers app.')
 
+    invoice = kwargs.get('invoice', None)
     registration = kwargs.get('registration', None)
     voucherId = kwargs.get('voucherId', None)
     customer = kwargs.get('customer', None)
@@ -125,12 +134,17 @@ def checkVoucherCode(sender, **kwargs):
     # If we got this far, then we can just use the model-level validation. The
     # dictionary that it returns takes the same form as the one that is returned
     # above if an error has already been found.
-    eventids = [
-        x.event.id for x in registration.temporaryeventregistration_set.exclude(dropIn=True)
-    ]
+    if not registration:
+        registration = Registration.objects.filter(invoice=invoice).first()
+    events = Event.objects.none()
+
+    if registration:
+        events = Event.objects.filter(
+            eventregistration__registration=registration
+        ).exclude(eventregistration__dropIn=True).values_list('id', flat=True)
 
     return obj.validate(
-        customer=customer, event_list=Event.objects.filter(id__in=eventids),
+        customer=customer, events=events,
         payAtDoor=getattr(registration, 'payAtDoor', False),
         raise_errors=False, return_amount=True,
         validate_customer=validate_customer
@@ -141,13 +155,13 @@ def checkVoucherCode(sender, **kwargs):
 def applyVoucherCodeTemporarily(sender, **kwargs):
     '''
     When the core registration system creates a temporary registration with a voucher code,
-    the voucher app looks for vouchers that match that code and creates TemporaryVoucherUse
+    the voucher app looks for vouchers that match that code and creates VoucherUse
     objects to keep track of the fact that the voucher may be used.
     '''
-    logger.debug('Signal fired to apply temporary vouchers.')
+    logger.debug('Signal fired to apply vouchers preliminarily.')
 
-    reg = kwargs.pop('registration')
-    voucherId = reg.data.get('gift', '')
+    invoice = kwargs.pop('invoice')
+    voucherId = invoice.data.get('gift', '')
 
     try:
         voucher = Voucher.objects.get(voucherId=voucherId)
@@ -155,9 +169,12 @@ def applyVoucherCodeTemporarily(sender, **kwargs):
         logger.debug('No applicable vouchers found.')
         return
 
-    tvu = TemporaryVoucherUse(voucher=voucher, registration=reg, amount=0)
+    tvu = VoucherUse(
+        voucher=voucher, invoice=invoice, beforeTax=voucher.beforeTax,
+        amount=0, applied=False
+    )
     tvu.save()
-    logger.debug('Temporary voucher use object created.')
+    logger.debug('Preliminary voucher use object created.')
 
 
 @receiver(post_student_info)
@@ -173,11 +190,11 @@ def applyReferrerVouchersTemporarily(sender, **kwargs):
 
     logger.debug('Signal fired to temporarily apply referrer vouchers.')
 
-    reg = kwargs.pop('registration')
+    invoice = kwargs.pop('invoice')
 
     # Email address is unique for users, so use that
     try:
-        c = Customer.objects.get(user__email=reg.email)
+        c = Customer.objects.get(user__email=invoice.email)
         vouchers = c.getReferralVouchers()
     except ObjectDoesNotExist:
         vouchers = None
@@ -187,65 +204,87 @@ def applyReferrerVouchersTemporarily(sender, **kwargs):
         return
 
     for v in vouchers:
-        TemporaryVoucherUse(voucher=v, registration=reg, amount=0).save()
+        VoucherUse(
+            voucher=v, invoice=invoice, beforeTax=v.beforeTax,
+            amount=0, applied=False
+        ).save()
 
 
 @receiver(apply_price_adjustments)
 def applyTemporaryVouchers(sender, **kwargs):
-    reg = kwargs.get('registration')
-    price = kwargs.get('initial_price')
+    invoice = kwargs.get('invoice')
+    prior_adjustment = kwargs.get('prior_adjustment')
 
-    logger.debug('Signal fired to apply temporary vouchers.')
+    logger.debug('Signal fired to apply preliminary vouchers.')
 
     # Put referral vouchers first, so that they are applied last in the loop.
     referral_cat = getConstant('referrals__referrerCategory')
 
-    tvus = list(reg.temporaryvoucheruse_set.filter(
-        voucher__category=referral_cat
-    )) + list(reg.temporaryvoucheruse_set.exclude(
-        voucher__category=referral_cat
-    ))
+    tvus = list(invoice.voucheruse_set.filter(
+        voucher__category=referral_cat,
+        applied=False
+    ).order_by('-beforeTax')) + list(invoice.voucheruse_set.exclude(
+        voucher__category=referral_cat,
+        applied=False
+    ).order_by('-beforeTax'))
+
+    response = {
+        'total_pretax': 0,
+        'total_posttax': 0,
+        'items': [],
+    }
 
     if not tvus:
         logger.debug('No applicable vouchers found.')
-        return ([], 0)
+        return response
 
-    voucher_names = []
-    total_voucher_amount = 0
-    remaining_price = price
+    remaining_pretax = invoice.total + prior_adjustment
+    remaining_posttax = (
+        invoice.total + prior_adjustment +
+        invoice.taxes + invoice.adjustments
+    )
 
-    while remaining_price > 0 and tvus:
+    while (remaining_pretax > 0 or remaining_posttax > 0) and tvus:
         tvu = tvus.pop()
 
         if tvu.voucher.maxAmountPerUse:
             amount = min(tvu.voucher.amountLeft, tvu.voucher.maxAmountPerUse)
         else:
             amount = tvu.voucher.amountLeft
-        amount = min(remaining_price, amount)
+
+        # The amount of the voucher that can be used depends on wh
+        if tvu.beforeTax:
+            amount = min(remaining_pretax, amount)
+            remaining_pretax -= amount
+            response['total_pretax'] += amount
+        else:
+            amount = min(remaining_posttax, amount)
+            response['total_posttax'] += amount
+
+        remaining_posttax -= amount
         tvu.amount = amount
         tvu.save()
+        response['items'].append({
+            'name': tvu.voucher.name,
+            'amount': amount,
+            'beforeTax': tvu.beforeTax,
+        })
 
-        remaining_price -= amount
-        voucher_names += [tvu.voucher.name]
-        total_voucher_amount += amount
-
-    return (voucher_names, total_voucher_amount)
+    return response
 
 
-@receiver(post_registration)
+@receiver(invoice_finalized)
 def applyVoucherCodesFinal(sender, **kwargs):
     '''
-    Once a registration has been completed, vouchers are used and referrers are awarded
+    Once an invoice is finalized, vouchers are used and referrers are awarded.
     '''
     logger.debug('Signal fired to mark voucher codes as applied.')
 
-    finalReg = kwargs.pop('registration')
-    tr = finalReg.temporaryRegistration
+    invoice = kwargs.pop('invoice')
+    tvus = VoucherUse.objects.filter(invoice=invoice, applied=False)
 
-    tvus = TemporaryVoucherUse.objects.filter(registration=tr)
-
-    for tvu in tvus:
-        vu = VoucherUse(voucher=tvu.voucher, registration=finalReg, amount=tvu.amount)
+    for vu in tvus:
+        vu.applied = True
         vu.save()
         if getConstant('referrals__enableReferralProgram'):
             awardReferrers(vu)
@@ -279,12 +318,12 @@ def reportVouchers(sender, **kwargs):
         return
 
     extras = {}
-    regs = regs.filter(registration__voucheruse__isnull=False).prefetch_related(
-        'registration__voucheruse_set', 'registration__voucheruse_set__voucher'
+    regs = regs.filter(registration__invoice__voucheruse__isnull=False).prefetch_related(
+        'registration__invoice__voucheruse_set', 'registration__invoice__voucheruse_set__voucher'
     )
 
     for reg in regs:
-        extras[reg.id] = list(reg.registration.voucheruse_set.annotate(
+        extras[reg.id] = list(reg.registration.invoice.voucheruse_set.annotate(
             name=Concat('voucher__voucherId', Value(': '), 'voucher__name', output_field=CharField()),
             type=Value('voucher', output_field=CharField()),
         ).values('id', 'amount', 'name', 'type'))

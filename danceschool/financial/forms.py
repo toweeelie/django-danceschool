@@ -5,10 +5,10 @@ from django.core.validators import ValidationError
 from django.urls import reverse
 from django.db.models import Q
 from django.forms.widgets import Select
-from django.utils.encoding import force_text
+from django.utils.encoding import force_str
 from django.utils.safestring import mark_safe
 from django.utils.html import format_html
-from django.utils.translation import ugettext_lazy as _, ugettext
+from django.utils.translation import gettext_lazy as _, gettext
 from django.utils import timezone
 
 from crispy_forms.helper import FormHelper
@@ -46,7 +46,7 @@ class ExpenseCategoryWidget(Select):
     def render_option(self, selected_choices, option_value, option_label):
         if option_value is None:
             option_value = ''
-        option_value = force_text(option_value)
+        option_value = force_str(option_value)
         if option_value in selected_choices:
             selected_html = mark_safe(' selected="selected"')
             if not self.allow_multiple_selected:
@@ -66,7 +66,7 @@ class ExpenseCategoryWidget(Select):
                            option_value,
                            selected_html,
                            extra_value_data,
-                           force_text(option_label))
+                           force_str(option_label))
 
 
 class ExpenseReportingForm(EventAutocompleteForm, forms.ModelForm):
@@ -116,7 +116,7 @@ class ExpenseReportingForm(EventAutocompleteForm, forms.ModelForm):
                 )[0].id,
             })
 
-        super(ExpenseReportingForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.helper = FormHelper()
 
@@ -216,7 +216,7 @@ class ExpenseReportingForm(EventAutocompleteForm, forms.ModelForm):
     def clean(self):
         # Custom cleaning ensures that user, hours, and total
         # are not reported where not necessary.
-        super(ExpenseReportingForm, self).clean()
+        super().clean()
 
         payBy = self.cleaned_data.get('payBy')
         hours = self.cleaned_data.get('hours')
@@ -259,11 +259,13 @@ class ExpenseReportingForm(EventAutocompleteForm, forms.ModelForm):
     class Media:
         js = (
             'admin/js/admin/RelatedObjectLookups.js',
-            'jquery-ui/jquery-ui.min.js',
+            'bootstrap-datepicker/js/bootstrap-datepicker.min.js',
             'js/expense_reporting.js',
         )
         css = {
-            'all': ('jquery-ui/jquery-ui.min.css', ),
+            'all': (
+                'bootstrap-datepicker/css/bootstrap-datepicker.standalone.min.css',
+            ),
         }
 
 
@@ -275,7 +277,7 @@ class InvoiceItemChoiceField(forms.ModelChoiceField):
 
     def to_python(self, value):
         try:
-            value = super(InvoiceItemChoiceField, self).to_python(value)
+            value = super().to_python(value)
         except (ValueError, ValidationError):
             key = self.to_field_name or 'pk'
             value = InvoiceItem.objects.filter(**{key: value})
@@ -340,7 +342,7 @@ class RevenueReportingForm(EventAutocompleteForm, forms.ModelForm):
             kwargs.update(initial={
                 'submissionUser': user.id
             })
-        super(RevenueReportingForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.helper = FormHelper()
 
@@ -463,10 +465,12 @@ class RevenueReportingForm(EventAutocompleteForm, forms.ModelForm):
     class Media:
         js = (
             'js/revenue_reporting.js',
-            'jquery-ui/jquery-ui.min.js',
+            'bootstrap-datepicker/js/bootstrap-datepicker.min.js',
         )
         css = {
-            'all': ('jquery-ui/jquery-ui.min.css', ),
+            'all': (
+                'bootstrap-datepicker/css/bootstrap-datepicker.standalone.min.css',
+            ),
         }
 
 
@@ -493,15 +497,15 @@ class CompensationRuleResetForm(forms.Form):
         staffmembers = kwargs.pop('staffmembers', StaffMember.objects.none())
 
         # Initialize a default (empty) form to fill
-        super(CompensationRuleResetForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         for cat in EventStaffCategory.objects.order_by('name'):
             this_label = cat.name
             this_help_text = ''
             if not getattr(cat, 'defaultwage', None):
-                this_help_text += ugettext('No default compensation specified. ')
+                this_help_text += gettext('No default compensation specified. ')
             if staffmembers:
-                this_help_text += ugettext('{count} selected members with rules specified.').format(
+                this_help_text += gettext('{count} selected members with rules specified.').format(
                     count=staffmembers.filter(expenserules__category=cat).count(),
                 )
 
@@ -538,7 +542,7 @@ class ExpenseRuleGenerationForm(forms.Form):
     def __init__(self, *args, **kwargs):
 
         # Initialize a default form to fill by rule
-        super(ExpenseRuleGenerationForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         for rule in RepeatedExpenseRule.objects.filter(disabled=False).order_by('id'):
             prefix = 'genericrule'

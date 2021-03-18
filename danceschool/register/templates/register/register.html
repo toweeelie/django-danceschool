@@ -1,0 +1,146 @@
+{% extends "cms/admin_home.html" %}
+{% load danceschool_tags sekizai_tags i18n static crispy_forms_tags cms_tags %}
+
+{% block main %}
+
+<div class="container">
+    <div class="row mt-4">
+        <div class="col-lg-9">
+            <h1>{{ register.title }}: {{ today|date:"F jS, Y" }}</h1>
+            <button class="btn btn-primary btn-lg submit-button invisible my-4" id="cart-submit">{% trans "Submit" %}</button>
+        </div>
+        <div class="col-lg-3">
+            <a class="btn btn-outline-secondary" data-toggle="collapse" href="#cart-container" role="button" aria-expanded="false" aria-controls="cart-container">
+                    <i class="fa fa-shopping-cart fa-2x"></i>&nbsp;{% trans "Your Shopping Cart" %}&nbsp;<span id="cartSummary" class="badge badge-success"></span>
+            </a>
+        </div>
+    </div>
+
+    <div id="alert-box"></div>
+
+    <div class="row my-1">
+        <div class="col-12 my-1" id="shoppingCart">
+            <div class="collapse" id="cart-container">
+                <div class="card">
+                    <div class="card-header">
+                        <h4>{% trans "Your Shopping Cart" %}
+                            <div class="float-right">
+                                <button class="btn btn-outline-secondary mx-3" id="emptyCart">{% trans "Empty" %}</button>
+                                <button class="btn" id="hideCart" data-toggle="collapse" href="#cart-container" role="button" aria-expanded="false" aria-controls="cart-container" aria-label="Hide Cart" title="Hide Cart"><i class="fa fa-chevron-up" aria-hidden="true"></i></button>
+                            </div>
+
+                        </h4>
+                    </div>
+                    <div class="card-body" id="cartItemsContainer">
+                        <table class="table">
+                            <thead>
+                                <tr><th>{% trans "Item" %}</th><th>{% trans "Price" %}</th></tr>
+                            </thead>
+                            <tbody id="cartItems"></tbody>
+                            <tbody id="subtotalLine"></tbody>
+                            <tbody id="discountList"></tbody>
+                            <tbody id="preTaxVoucherList"></tbody>
+                            <tbody id="addonList"></tbody>
+                            <tbody id="taxInfo"></tbody>
+                            <tbody id="postTaxVoucherList"></tbody>
+                            <tbody id="cartTotalContainer">
+                                <tr>
+                                    <th>{% trans "Total" %}:</th>
+                                    <th>{{ currencySymbol }}<span id="cartTotal"></span></th>
+                                </tr>                                
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {% render_placeholder register.placeholder %}
+
+    </div>
+</div>
+
+{% addtoblock "js" %}
+<script type="text/javascript">
+
+    // Define global variables that are used by the register script.;
+    var $ = django.jQuery;
+
+    // This object contains the information for which the individual should register.;
+    var regData = {};
+
+    // This object contains additional information that is useful for register scripts.;
+    var regParams = {
+        payAtDoor: true,
+        currencySymbol: "{{ currencySymbol }}",
+        multipleVoucherString: "{% trans 'You cannot apply two vouchers to this registration. Please remove the existing voucher from your cart and try again.' %}",
+        emptyRegisterVoucherString: "{% trans 'You have applied a voucher to an empty cart. It will be validated once you have added an item.' %}",
+        itemString: "{% trans 'Item' %}",
+        itemStringPlural: "{% trans 'Items' %}",
+        customerString: "{% trans 'Customer' %}",
+        subtotalString: "{% trans 'Subtotal' %}",
+        taxesString: "{% trans 'Taxes' %}",
+        adjustmentsString: "{% trans 'Adjustments' %}",
+        addonString: "{% trans 'Free Add-On' %}",
+        discountString: "{% trans 'Discount' %}",
+        discountTotalString: "{% trans 'Total Discounts' %}",
+        outstandingBalanceString: "{% trans 'Balance' %}",
+        voucherString: "{% trans 'Voucher' %}",
+        dropInString: "{% trans 'Drop-in' %}",
+        registerUrl: "{% url 'ajaxRegistration' %}",
+        customerLookupUrl: "{% url 'viewregistrations_json' %}",
+        guestLookupUrl: "{% url 'guestCheckInfoJSON' %}",
+        checkInUrl: "{% url 'ajax_checkin' %}",
+        registerDate: "{{ year }}-{{ month }}-{{ day }}",
+    }
+</script>
+{% endaddtoblock %}
+
+{% addtoblock "js" %}<script type="text/javascript" src="{% static 'moment/moment.min.js' %}"></script>{% endaddtoblock %}
+{% addtoblock "js" %}<script type="text/javascript" src="{% static 'js/manage_register.js' %}"></script>{% endaddtoblock %}
+
+{% addtoblock "css" %}
+    <style type="text/css">
+    .customerCheckInLabel {
+        position: relative;
+        display: inline-block;
+        width: 40px;
+        height: 20px;
+        background-color: #6C757D;
+        border-radius: 20px;
+        transition: all 0.3s;
+    }
+    .customerCheckInLabel::after {
+        content: '';
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        border-radius:50%;
+        background-color: white;
+        top: 1px;
+        left: 1px;
+        transition: all 0.3s;
+    }
+
+    .customerCheckIn:checked + .customerCheckInLabel::after {
+        left : 20px;
+    }
+    .customerCheckIn:checked + .customerCheckInLabel {
+        background-color: #28A745;
+    }
+
+    .customerCheckIn:disabled + .customerCheckInLabel {
+        background-color: #BFBFBF;
+    }
+
+    .customerCheckIn:disabled + .customerCheckInLabel::after {
+        background-color: #6C757D;
+    }
+
+    .customerCheckIn {
+    display : none;
+    }
+</style>
+{% endaddtoblock %}
+
+{% endblock %}

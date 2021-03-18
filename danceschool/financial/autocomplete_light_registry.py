@@ -1,4 +1,4 @@
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.contrib.auth.models import User
 from django.db.models import Q
 
@@ -197,4 +197,4 @@ class TransactionPartyAutoComplete(autocomplete.Select2QuerySetView):
                     name=text, staffMember=None, user=None, location=None
                 )[0]
         else:
-            return super(TransactionPartyAutoComplete, self).create_object(text)
+            return super().create_object(text)

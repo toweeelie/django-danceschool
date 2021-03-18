@@ -5,13 +5,13 @@ from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from django.urls import reverse
 from django.db.models import Q
 from django.utils import timezone
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.utils.dateparse import parse_datetime
 
 from datetime import datetime, timedelta
 
 from danceschool.core.models import (
-    Instructor, StaffMember, TemporaryRegistration, TemporaryEventRegistration,
+    Instructor, StaffMember, Registration, EventRegistration,
     DanceRole, Event, EventOccurrence, EventStaffMember, Customer
 )
 from danceschool.core.constants import getConstant, REG_VALIDATION_STR
@@ -34,11 +34,11 @@ class InstructorAvailabilityView(TemplateView):
             (thisStaffMember and thisUser and thisUser.has_perm('private_lessons.edit_own_availability')) or
             (thisUser and thisUser.has_perm('private_lessons.edit_others_availability'))
         ):
-            return super(InstructorAvailabilityView, self).get(request, *args, **kwargs)
+            return super().get(request, *args, **kwargs)
         raise Http404()
 
     def get_context_data(self, **kwargs):
-        context = super(InstructorAvailabilityView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         context.update({
             'instructor': getattr(getattr(self.request, 'user'), 'staffmember'),
@@ -131,7 +131,7 @@ class BookPrivateLessonView(FormView):
     form_class = SlotBookingForm
 
     def get_context_data(self, **kwargs):
-        context = super(BookPrivateLessonView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update({
             'instructor_list': Instructor.objects.filter(
                 availableForPrivates=True, instructorprivatelessondetails__isnull=False
@@ -144,7 +144,7 @@ class BookPrivateLessonView(FormView):
         '''
         Pass the current user to the form to render the payAtDoor field if applicable.
         '''
-        kwargs = super(BookPrivateLessonView, self).get_form_kwargs(**kwargs)
+        kwargs = super().get_form_kwargs(**kwargs)
         kwargs['user'] = self.request.user if hasattr(self.request, 'user') else None
         return kwargs
 
@@ -192,7 +192,7 @@ class BookPrivateLessonView(FormView):
             Q(status=InstructorAvailabilitySlot.SlotStatus.available) |
             (
                 Q(status=InstructorAvailabilitySlot.SlotStatus.tentative) &
-                ~Q(temporaryEventRegistration__registration__expirationDate__gte=timezone.now())
+                ~Q(eventRegistration__invoiceItem__invoice__expirationDate__gte=timezone.now())
             )
         )
 
@@ -206,7 +206,7 @@ class BookPrivateLessonView(FormView):
 
         if existingEvents.filter(
             Q(eventregistration__isnull=False) |
-            Q(temporaryeventregistration__registration__expirationDate__gte=timezone.now())
+            Q(eventregistration__invoiceItem__invoice__expirationDate__gte=timezone.now())
         ).exists():
             form.add_error(
                 None,
@@ -251,7 +251,7 @@ class BookPrivateLessonView(FormView):
         # the event.
         lesson.save()
 
-        # The temporary  expires after a period of inactivity that is specified in preferences.
+        # The temporary booking expires after a period of inactivity that is specified in preferences.
         expiry = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
 
         # Slots without pricing tiers can't go through the actual registration process.
@@ -268,43 +268,46 @@ class BookPrivateLessonView(FormView):
             }
             return HttpResponseRedirect(reverse('privateLessonStudentInfo'))
 
-        # Slots with pricing tiers require an TemporaryRegistration to be created,
+        # Slots with pricing tiers require a Registration to be created,
         # and then they are redirected through the registration system.
         else:
 
             regSession = self.request.session.get(REG_VALIDATION_STR, {})
 
-            # Create a Temporary Registration associated with this lesson.
-            reg = TemporaryRegistration(
+            # Create a temporary Registration associated with this lesson.
+            reg = Registration(
                 submissionUser=submissionUser, dateTime=timezone.now(),
                 payAtDoor=payAtDoor,
-                expirationDate=expiry,
+                final=False,
             )
 
-            tr = TemporaryEventRegistration(
+            price = lesson.getBasePrice(payAtDoor=payAtDoor) * affectedSlots.count()
+
+            tr = EventRegistration(
                 event=lesson, role=role,
-                price=lesson.getBasePrice(payAtDoor=payAtDoor) * affectedSlots.count()
             )
 
             # Any remaining form data goes into the JSONfield.
             reg.data = form.cleaned_data or {}
 
             # Now we are ready to save and proceed.
-            reg.priceWithDiscount = tr.price
+            invoice = reg.link_invoice(
+                expirationDate=expiry, grossTotal=price, total=price
+            )
             reg.save()
             tr.registration = reg
-            tr.save()
+            tr.save(grossTotal=price, total=price)
 
             affectedSlots.update(
                 lessonEvent=lesson,
                 status=InstructorAvailabilitySlot.SlotStatus.tentative,
-                temporaryEventRegistration=tr,
+                eventRegistration=tr,
             )
 
-            # Load the temporary registration into session data like a regular registration
+            # Load the invoice ID into session data like a regular registration
             # and redirect to Step 2 as usual.
-            regSession["temporaryRegistrationId"] = reg.id
-            regSession["temporaryRegistrationExpiry"] = expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
+            regSession["invoiceId"] = invoice.id
+            regSession["invoiceExpiry"] = expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
             self.request.session[REG_VALIDATION_STR] = regSession
             return HttpResponseRedirect(reverse('getStudentInfo'))
 
@@ -340,10 +343,10 @@ class PrivateLessonStudentInfoView(FormView):
             return HttpResponseRedirect(reverse('bookPrivateLesson'))
 
         self.payAtDoor = lessonSession.get('payAtDoor', False)
-        return super(PrivateLessonStudentInfoView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
-        context = super(PrivateLessonStudentInfoView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context.update({
             'lesson': self.lesson,
             'teachers': [x.staffMember.fullName for x in self.lesson.eventstaffmember_set.all()],
@@ -352,7 +355,7 @@ class PrivateLessonStudentInfoView(FormView):
 
     def get_form_kwargs(self, **kwargs):
         ''' Pass along the request data to the form '''
-        kwargs = super(PrivateLessonStudentInfoView, self).get_form_kwargs(**kwargs)
+        kwargs = super().get_form_kwargs(**kwargs)
         kwargs['request'] = self.request
         kwargs['payAtDoor'] = self.payAtDoor
         return kwargs

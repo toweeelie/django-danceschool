@@ -2,7 +2,7 @@ from django.dispatch import receiver
 from django.db.models import Q, Value, CharField, F
 from django.db.models.query import QuerySet
 from django.db.models.signals import post_save, m2m_changed
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.contrib.auth.models import User
 
 import sys
@@ -106,7 +106,11 @@ def createRevenueItemForInvoiceItem(sender, instance, **kwargs):
 
     logger.debug('RevenueItem signal fired for InvoiceItem %s.' % instance.id)
 
-    received_status = (instance.invoice.status == Invoice.PaymentStatus.paid)
+    if instance.invoice.status == Invoice.PaymentStatus.preliminary:
+        logger.debug('Preliminary invoice. No revenue item will be created.')
+        return
+
+    received_status = (not instance.invoice.unpaid)
 
     related_item = getattr(instance, 'revenueitem', None)
     if not related_item:
@@ -150,6 +154,27 @@ def createRevenueItemForInvoiceItem(sender, instance, **kwargs):
             logger.info('RevenueItem associated with InvoiceItem %s updated.' % instance.id)
 
 
+@receiver(post_save, sender=Invoice)
+def createRevenueItemsFromInvoice(sender, instance, **kwargs):
+    '''
+    This signal handler exists because an invoice can be changed from
+    preliminary to non-preliminary without editing the invoice items, in which
+    case revenue items will need to be created.
+    '''
+
+    if 'loaddata' in sys.argv or ('raw' in kwargs and kwargs['raw']):
+        return
+
+    logger.debug('RevenueItem signal fired for Invoice %s.' % instance.id)
+
+    if instance.status == Invoice.PaymentStatus.preliminary:
+        logger.debug('Preliminary invoice. No revenue items will be created.')
+        return
+
+    for item in instance.invoiceitem_set.all():
+        createRevenueItemForInvoiceItem(sender, item, **kwargs)
+
+
 @receiver(post_save, sender=User)
 @receiver(post_save, sender=StaffMember)
 @receiver(post_save, sender=Location)
@@ -181,15 +206,15 @@ def reportRevenue(sender, **kwargs):
         return
 
     extras = {}
-    regs = regs.filter(invoiceitem__revenueitem__isnull=False).select_related(
-        'invoiceitem__revenueitem'
+    regs = regs.filter(invoiceItem__revenueitem__isnull=False).select_related(
+        'invoiceItem__revenueitem'
     )
 
     for reg in regs:
         extras[reg.id] = [{
-            'id': reg.invoiceitem.revenueitem.id,
-            'name': reg.invoiceitem.revenueitem.description,
+            'id': reg.invoiceItem.revenueitem.id,
+            'name': reg.invoiceItem.revenueitem.description,
             'type': 'revenueitem',
-            'amount': reg.invoiceitem.revenueitem.total,
+            'amount': reg.invoiceItem.revenueitem.total,
         }, ]
     return extras

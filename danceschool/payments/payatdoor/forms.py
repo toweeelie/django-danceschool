@@ -3,17 +3,14 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from django.urls import reverse
 from django.db.models import Q
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from dal import autocomplete
 from crispy_forms.helper import FormHelper
-from crispy_forms.layout import Layout, Div, Field, HTML, Hidden, Submit
+from crispy_forms.layout import Layout, HTML, Hidden, Submit
 from dal import autocomplete
-from random import random
-import json
-import logging
 
-from danceschool.core.models import Invoice, TemporaryRegistration, Event
+from danceschool.core.models import Invoice
 from .models import PayAtDoorFormModel
 from .constants import ATTHEDOOR_PAYMENTMETHOD_CHOICES
 
@@ -27,7 +24,7 @@ class CashPaymentMixin(object):
     def clean_submissionUser(self):
         user_id = self.data.get('submissionUser') or None
 
-        if user_id is 'None' or not user_id:
+        if user_id == 'None' or not user_id:
             return None
 
         user = User.objects.get(id=user_id)
@@ -54,7 +51,7 @@ class WillPayAtDoorForm(forms.Form):
     When this form is submitted, the registration is allowed
     to proceed, but the invoice is not yet marked as paid.
     '''
-    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all(), required=True)
+    invoice = forms.ModelChoiceField(queryset=Invoice.objects.all(), required=True)
     submissionUser = forms.ModelChoiceField(queryset=User.objects.all(), required=False)
     instance = forms.ModelChoiceField(queryset=PayAtDoorFormModel.objects.all(), required=True)
 
@@ -71,10 +68,7 @@ class WillPayAtDoorForm(forms.Form):
     def __init__(self, *args, **kwargs):
         subUser = kwargs.pop('user', '')
         instance = kwargs.pop('instance', None)
-        registration = kwargs.pop('registration', None)
-
-        # Invoice is not used for this form, but pop it out of kwargs to avoid issues.
-        kwargs.pop('invoice', None)
+        invoiceId = kwargs.pop('invoice', None)
 
         self.helper = FormHelper()
         self.helper.form_method = 'post'
@@ -91,7 +85,7 @@ class WillPayAtDoorForm(forms.Form):
                     </h6>
                     <div class="card-body">
                 """),
-            Hidden('registration', registration),
+            Hidden('invoice', invoiceId),
             subUser_layout,
             Hidden('instance', instance),
             'willPayAtDoor',
@@ -102,7 +96,7 @@ class WillPayAtDoorForm(forms.Form):
             """),
         )
 
-        super(WillPayAtDoorForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class DoorPaymentForm(CashPaymentMixin, forms.Form):
@@ -115,8 +109,7 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
         queryset=User.objects.filter(Q(staffmember__isnull=False) | Q(is_staff=True)),
         required=True
     )
-    registration = forms.ModelChoiceField(queryset=TemporaryRegistration.objects.all(), required=False)
-    invoice = forms.ModelChoiceField(queryset=Invoice.objects.all(), required=False)
+    invoice = forms.ModelChoiceField(queryset=Invoice.objects.all(), required=True)
 
     amountPaid = forms.FloatField(label=_('Amount Paid'), required=True, min_value=0)
     paymentMethod = forms.ChoiceField(
@@ -148,7 +141,6 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
     def __init__(self, *args, **kwargs):
         subUser = kwargs.pop('user', '')
         invoiceId = kwargs.pop('invoice', None)
-        regId = kwargs.pop('registration', None)
         initialAmount = kwargs.pop('initialAmount', None)
 
         self.helper = FormHelper()
@@ -159,7 +151,6 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
         self.helper.layout = Layout(
             Hidden('submissionUser', subUser),
             Hidden('invoice', invoiceId),
-            Hidden('registration', regId),
             'amountPaid',
             'paymentMethod',
             'payerEmail',
@@ -172,10 +163,10 @@ class DoorPaymentForm(CashPaymentMixin, forms.Form):
             'amountPaid': initialAmount
         })
 
-        super(DoorPaymentForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def clean_submissionUser(self):
-        user = super(DoorPaymentForm, self).clean_submissionUser()
+        user = super().clean_submissionUser()
 
         if not user.has_perm('core.accept_door_payments'):
             raise ValidationError(_('Invalid user submitted door payment.'))

@@ -1,7 +1,7 @@
 from cms.plugin_base import CMSPluginBase
 from cms.plugin_pool import plugin_pool
 from cms.models.pluginmodel import CMSPlugin
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 
 from danceschool.core.constants import getConstant
@@ -31,12 +31,11 @@ class WillPayAtDoorFormPlugin(CMSPluginBase):
         return context
 
     def get_cart_form(self, context, instance, *args, **kwargs):
-        registration = getattr(context.get('registration', None), 'id', None)
         invoice = getattr(context.get('invoice', None), 'id', None)
         user = getattr(context.get('user', None), 'id', None)
 
         return WillPayAtDoorForm(
-            user=user, invoice=invoice, registration=registration, instance=instance.id
+            user=user, invoice=invoice, instance=instance.id
         )
 
 
@@ -73,14 +72,12 @@ class PayAtDoorFormPlugin(CMSPluginBase):
         return context
 
     def get_cart_form(self, context, instance, *args, **kwargs):
-        registration = getattr(context.get('registration', None), 'id', '')
         invoice = str(getattr(context.get('invoice', None), 'id', ''))
         user = getattr(context.get('user', None), 'id', '')
-        initialAmount = context.get('netPrice', 0)
+        initialAmount = getattr(context.get('invoice', None), 'outstandingBalance', 0)
 
         return DoorPaymentForm(
-            user=user, invoice=invoice, registration=registration,
-            initialAmount=round(initialAmount, 2)
+            user=user, invoice=invoice, initialAmount=round(initialAmount, 2)
         )
 
 

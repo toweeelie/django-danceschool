@@ -1,6 +1,6 @@
 from django.db import models
 from django.conf import settings
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from cms.models.pluginmodel import CMSPlugin
 from cms.models.fields import PageField
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class StripeCharge(PaymentRecord):
 
     def __init__(self, *args, **kwargs):
-        super(StripeCharge, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         # bring in stripe, and get the api key from settings.py
         import stripe

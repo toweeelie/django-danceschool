@@ -4,7 +4,7 @@ from django.contrib import messages
 from django.db.models import Q
 from django.http import HttpResponseRedirect, Http404, JsonResponse
 from django.views.generic import FormView, RedirectView, TemplateView, View
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -15,18 +15,23 @@ import json
 from braces.views import PermissionRequiredMixin
 
 from .models import (
-    Event, Series, PublicEvent, TemporaryRegistration, TemporaryEventRegistration,
-    Invoice, CashPaymentRecord, DanceRole, Customer
+    Event, Series, PublicEvent, Invoice, InvoiceItem, Customer,
+    CashPaymentRecord, DanceRole, Registration, EventRegistration
 )
-from .forms import ClassChoiceForm, RegistrationContactForm, DoorAmountForm
+from .forms import (
+    ClassChoiceForm, RegistrationContactForm, MultiRegCustomerNameForm,
+    PartnerRequiredForm
+)
 from .constants import getConstant, REG_VALIDATION_STR
 from .signals import (
-    post_student_info, apply_discount, apply_price_adjustments, check_voucher
+    post_student_info, apply_discount, apply_price_adjustments,
+    get_invoice_related, get_invoice_item_related
 )
 from .mixins import (
     FinancialContextMixin, EventOrderMixin, SiteHistoryMixin,
     RegistrationAdjustmentsMixin, ReferralInfoMixin
 )
+from .utils.timezone import ensure_localtime
 
 
 # Define logger for this file
@@ -54,11 +59,12 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
     form_class = ClassChoiceForm
     template_name = 'core/registration/event_registration.html'
     returnJson = False
+    voucherField = False
 
-    # The temporary registration and the  list of event registrations is kept
+    # The temporary registration and the list of event registrations is kept
     # as an attribute of the view so that it may be used in subclassed versions
     # of methods like get_success_url() (see e.g. the door app).
-    temporaryRegistration = None
+    registration = None
     event_registrations = []
 
     def dispatch(self, request, *args, **kwargs):
@@ -106,6 +112,12 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
             'openEvents': listing['openEvents'],
             'closedEvents': listing['closedEvents'],
         })
+
+        # Automatically pass along some of the optional form kwargs
+        for key in ['voucherField', ]:
+            if isinstance(getattr(self, key, None), bool):
+                kwargs[key] = getattr(self, key, None)
+
         return kwargs
 
     def form_invalid(self, form):
@@ -130,24 +142,44 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
 
         # The session expires after a period of inactivity that is specified in preferences.
         expiry = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
-        permitted_keys = getattr(form, 'permitted_event_keys', ['role', ])
 
         # These are prefixes that may be used for events in the form.  Each one
         # corresponds to a polymorphic content type (PublicEvent, Series, etc.)
-        event_types = ['event_', 'publicevent_', 'series_']
+        event_types = ['event', 'publicevent', 'series', 'privatelessonevent']
 
         try:
-            event_listing = {
-                int(key.split("_")[-1]): [
-                    {k: v for k, v in json.loads(y).items() if k in permitted_keys} for y in value
-                ]
-                for key, value in form.cleaned_data.items() if any(x in key for x in event_types) and value
-            }
+            event_listing = {}
+            for key, value in form.cleaned_data.items():
+                if key.split('_')[0] in event_types and value:
+                    # There may be more than one registration per event, but we
+                    # also want only one drop-in registration if possible, to
+                    # avoid issues with automatic event check-ins.
+                    this_event_list = []
+                    this_dropin = {'dropIn': True, 'occurrences': []}
+                    for y in [x for x in value if x[1] != 0]:
+                        this_quantity = y[1]
+
+                        if y[0].startswith('dropin_') and this_quantity == 1:
+                            this_dropin['occurrences'].append(int(y[0].split('_')[-1]))
+                        else:
+                            this_event_item = {'role': None}
+                            if y[0].startswith('role_'):
+                                this_event_item = {'role': int(y[0].split('_')[-1])}
+                            elif y[0].startswith('dropin_'):
+                                this_event_item.update({
+                                    'dropIn': True,
+                                    'occurrences': [int(y[0].split('_')[-1]),]
+                                })
+                            for i in range(this_quantity):
+                                this_event_list.append(this_event_item)
+                    if this_dropin.get('occurrences', []):
+                        this_event_list.append(this_dropin)
+                    event_listing[int(key.split("_")[-1])] = this_event_list
             non_event_listing = {
                 key: value for key, value in form.cleaned_data.items() if
-                not any(x in key for x in event_types)
+                not key.split('_')[0] in event_types
             }
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError, IndexError) as e:
             form.add_error(None, ValidationError(_('Invalid event information passed.'), code='invalid'))
             return self.form_invalid(form)
 
@@ -162,7 +194,7 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
         presetCustomer = non_event_listing.pop('CustomerSearch',False)
 
         if presetCustomer:
-            reg = TemporaryRegistration(
+            reg = Registration(
                 firstName = presetCustomer.first_name, lastName = presetCustomer.last_name, 
                 email = presetCustomer.email, phone = presetCustomer.phone, 
                 submissionUser=submissionUser, dateTime=timezone.now(),
@@ -170,15 +202,14 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
                 expirationDate=expiry,
             )
         else:
-            reg = TemporaryRegistration(
+            reg = Registration(
                 submissionUser=submissionUser, dateTime=timezone.now(),
-                payAtDoor=non_event_listing.pop('payAtDoor', False),
-                expirationDate=expiry,
+                payAtDoor=non_event_listing.pop('payAtDoor', False), final=False
             )
         
 
         # Anything passed by this form that is not an Event field (any extra fields) are
-        # passed directly into the TemporaryRegistration's data.
+        # passed directly into the Registration's data.
         reg.data = non_event_listing or {}
 
         if regSession.get('marketing_id'):
@@ -187,16 +218,14 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
         # Reset the list of event registrations (if it's not empty) and build it
         # from the form submission data.
         self.event_registrations = []
-        grossPrice = 0
 
-        for key, value_list in event_listing.items():
+        for key, eventRegs in event_listing.items():
             this_event = associated_events.get(id=key)
 
-            for value in value_list:
-
+            for value in eventRegs:
                 # Check if registration is still feasible based on both completed registrations
                 # and registrations that are not yet complete
-                this_role_id = value.get('role', None) if 'role' in permitted_keys else None
+                this_role_id = value.get('role', None)
                 soldOut = this_event.soldOutForRole(role=this_role_id, includeTemporaryRegs=True)
 
                 if soldOut:
@@ -213,45 +242,76 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
                         # at all.
                         form.add_error(None, ValidationError(
                             _(
-                                'Registration for "%s" is tentatively sold out while ' +
-                                'others complete their registration.  Please try ' +
-                                'again later.' % this_event.name
+                                'Registration for "%s" is tentatively ' % this_event.name +
+                                'sold out while others complete their registration. ' +
+                                'Please try again later.'
                             ), code='invalid')
                         )
                         return self.form_invalid(form)
 
-                dropInList = [int(k.split("_")[-1]) for k, v in value.items() if k.startswith('dropin_') and v is True]
+                dropInList = value.get('occurrences', []) if value.get('dropIn', False) else []
 
-                # If nothing is sold out, then proceed to create a TemporaryRegistration and
-                # TemporaryEventRegistration objects for the items selected by this form.  The
+                # If nothing is sold out, then proceed to create Registration and
+                # EventRegistration objects for the items selected by this form.  The
                 # expiration date is set to be identical to that of the session.
 
                 logger.debug('Creating temporary event registration for: %s' % key)
                 if len(dropInList) > 0:
-                    tr = TemporaryEventRegistration(
-                        event=this_event, dropIn=True, price=this_event.getBasePrice(dropIns=len(dropInList))
+                    this_price = this_event.getBasePrice(dropIns=len(dropInList))
+                    tr = EventRegistration(
+                        event=this_event, dropIn=True,
                     )
                 else:
-                    tr = TemporaryEventRegistration(
-                        event=this_event, price=this_event.getBasePrice(payAtDoor=reg.payAtDoor), role_id=this_role_id
+                    this_price = this_event.getBasePrice(payAtDoor=reg.payAtDoor)
+                    tr = EventRegistration(
+                        event=this_event, role_id=this_role_id
                     )
                 # If it's possible to store additional data and such data exist, then store them.
-                tr.data = {k: v for k, v in value.items() if k in permitted_keys and k != 'role'}
+                tr.data = {k: v for k, v in value.items() if k not in ['role', 'dropIn', 'occurrences']}
+                if dropInList:
+                    tr.data['__dropInOccurrences'] = dropInList
+
+                checkin_rule = getConstant('registration__doorCheckInRule')
+                if reg.payAtDoor and checkin_rule == 'E':
+                    # Check into the full event
+                    tr.data['__checkInEvent'] = True
+                elif reg.payAtDoor and checkin_rule == 'O' and dropInList:
+                    # Check into the first upcoming drop-in occurrence
+                    best_occ = tr.event.eventoccurrence_set.filter(
+                        id__in=dropInList,
+                        startTime__gte=ensure_localtime(timezone.now()) - timedelta(minutes=45)
+                    ).first()
+                    tr.data['__checkInOccurrence'] = getattr(best_occ, 'id', None)
+                elif reg.payAtDoor and checkin_rule == 'O':
+                    # Check into the next upcoming occurrence (45 min. grace period)
+                    tr.data['__checkInOccurrence'] = getattr(
+                        tr.event.getNextOccurrence(
+                            ensure_localtime(timezone.now()) - timedelta(minutes=45)
+                        ),
+                        'id',
+                        None
+                    )
+
+                tr.data['__price'] = this_price
                 self.event_registrations.append(tr)
-                grossPrice += tr.price
 
         # If we got this far with no issues, then save
-        reg.priceWithDiscount = grossPrice
+        invoice = reg.link_invoice(expirationDate=expiry)
         reg.save()
+
         for er in self.event_registrations:
+            # Saving the event registration automatically creates an InvoiceItem.
             er.registration = reg
-            er.save()
+            this_price = er.data.pop('__price')
+            er.save(grossTotal=this_price, total=this_price)
 
-        # Put this in a property in case the get_success_url() method needs it.
-        self.temporaryRegistration = reg
+        # Put these in a property in case the get_success_url() method needs them.
+        self.registration = reg
+        self.invoice = invoice
 
-        regSession["temporaryRegistrationId"] = reg.id
-        regSession["temporaryRegistrationExpiry"] = expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
+        regSession["invoiceId"] = invoice.id.__str__()
+        regSession["invoiceExpiry"] = expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
+        regSession["payAtDoor"] = reg.payAtDoor
         self.request.session[REG_VALIDATION_STR] = regSession
 
         if self.returnJson:
@@ -337,9 +397,9 @@ class ClassRegistrationView(FinancialContextMixin, EventOrderMixin, SiteHistoryM
 
 class AjaxClassRegistrationView(PermissionRequiredMixin, RegistrationAdjustmentsMixin, View):
     '''
-    This view handles Ajax requests to create or update a TemporaryRegistration.
+    This view handles Ajax requests to create or update a Registration.
     Create requests can be done at any time, but update requests only work if
-    the TemporaryRegistration to be updated is already in the session data and
+    the Registration to be updated is already in the session data and
     has not expired.  The view returns JSON indicating success or failure as well
     as the URL to which the page it returns to can optionally redirect to.
     '''
@@ -357,26 +417,29 @@ class AjaxClassRegistrationView(PermissionRequiredMixin, RegistrationAdjustments
             returnUrl = reverse('registrationOffline')
             return JsonResponse({'status': 'success', 'redirect': returnUrl})
 
-        # The temporary registration and the list of event registrations is kept
-        # as an attribute of the view so that it may be used in subclassed versions
-        # of methods like get_success_url() (see e.g. the door app).
-        self.temporaryRegistration = None
-        self.event_registrations = []
-
         return super().dispatch(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         '''
-        Handle creation or update of a temporary registration.
+        Handle creation or update of an invoice.
         '''
 
-        regSession = self.request.session.get(REG_VALIDATION_STR, {})
-        errors = []
+        regSession = request.session.get(REG_VALIDATION_STR, {})
 
-        if request.user.is_authenticated:
-            submissionUser = request.user
-        else:
-            submissionUser = None
+        # This dictionary holds the information that will be serialized to JSON
+        # and sent back to the requesting user.  It is populated gradually as
+        # the view's logic proceeds.  Some special keys are also populated and
+        # then popped off before the response is sent, such as the __related__
+        # keys corresponding to other models that are one-to-one linked to an
+        # Invoice or InvoiceItem, which need to be carried along and saved only
+        # after the Invoice/InvoiceItem is saved.
+        response = {}
+
+        # This is the list of errors that are potentially populated by the
+        # various checks in this view or by its signal handlers.  When a
+        # particular error makes it impossible to proceed with the view's logic,
+        # an error response will be sent if this list is non-empty.
+        errors = []
 
         try:
             post_data = json.loads(request.body)
@@ -390,72 +453,73 @@ class AjaxClassRegistrationView(PermissionRequiredMixin, RegistrationAdjustments
                 'errors': errors,
             })
 
-        # Used later for updating the registration if needed.
-        reg_nullable_keys = [
-            'firstName', 'lastName', 'email', 'phone', 'howHeardAboutUs',
-        ]
-        reg_bool_keys = ['student', 'payAtDoor']
+        # Used later for updating the invoice and registration if needed.
+        invoice_nullable_keys = ['firstName', 'lastName', 'email']
 
-        # Determine whether to create a new registration or update an existing one.
-        reg_id = post_data.get('id', None)
-        if reg_id:
+        # Determine whether to create a new Invoice or update an existing one.
+        # Regardless of which is the case, the Invoice ID will be added to the
+        # response data after the Invoice has been saved and before returning
+        # if the update process is successful.
+        invoice_id = post_data.get('id', None)
+        if invoice_id:
             try:
-                reg = TemporaryRegistration.objects.get(id=reg_id)
+                invoice = Invoice.objects.get(id=invoice_id)
             except ObjectDoesNotExist:
                 errors.append({
                     'code': 'invalid_id',
-                    'message': _('Invalid registration ID passed.')
+                    'message': _('Invalid invoice ID passed.'),
                 })
                 return JsonResponse({
                     'status': 'failure',
                     'errors': errors,
                 })
 
-            # In order to update an existing registration, the ID passed in POST must
+            # In order to update an existing invoice, the ID passed in POST must
             # match the id contained in the current session data, and the existing
-            # registration must not have expired.
-            if reg.id != regSession.get('temporaryRegistrationId'):
+            # invoice must not have expired or be non-editable.
+            if str(invoice.id) != regSession.get('invoiceId'):
                 errors.append({
-                    'code': 'invalid_reg_id',
-                    'message': _('Invalid registration ID passed.')
+                    'code': 'invalid_invoice_id',
+                    'message': _('Invalid invoice ID passed.')
                 })
 
             session_expiry = parse_datetime(
-                regSession.get('temporaryRegistrationExpiry', ''),
+                regSession.get('invoiceExpiry', ''),
             )
             if not session_expiry or session_expiry < timezone.now():
                 errors.append({
                     'code': 'expired',
                     'message': _('Your registration session has expired. Please try again.'),
                 })
-        else:
-            # Pass the POST and specify defaults.
-            reg_defaults = {key: post_data.get(key, None) for key in reg_nullable_keys}
-            reg_defaults.update({key: post_data.get(key, False) for key in reg_bool_keys})
 
-            reg_defaults.update({
-                'submissionUser': submissionUser,
-                'dateTime': timezone.now(),
-                'comments': post_data.get('comments', ''),
+            if not invoice.itemsEditable:
+                errors.append({
+                    'code': 'not_editable',
+                    'message': _('This invoice can no longer be modified.'),
+                })
+        else:
+            invoice_defaults = {key: post_data.get(key, None) for key in invoice_nullable_keys}
+            invoice_defaults.update({
+                'submissionUser': request.user if request.user.is_authenticated else None,
                 'data': {},
+                'status': Invoice.PaymentStatus.preliminary,
+                'buyerPaysSalesTax': getConstant('registration__buyerPaysSalesTax'),
             })
+            invoice = Invoice(**invoice_defaults)
 
             if post_data.get('data', False):
                 if isinstance(post_data['data'], dict):
-                    reg_defaults['data'] = post_data['data']
+                    invoice_defaults['data'] = post_data['data']
                 else:
                     try:
-                        reg_defaults['data'] = json.loads(post_data['data'])
+                        invoice_defaults['data'] = json.loads(post_data['data'])
                     except json.decoder.JSONDecodeError:
                         errors.append({
                             'code': 'invalid_json',
                             'message': _('You have passed invalid JSON data for this registation.')
                         })
 
-            # Create a new TemporaryRegistration
-            reg = TemporaryRegistration(**reg_defaults)
-
-        # We now have a registration, but before going further, return failure
+        # We now have an invoice, but before going further, return failure
         # if any errors have arisen.
         if errors:
             return JsonResponse({
@@ -463,259 +527,215 @@ class AjaxClassRegistrationView(PermissionRequiredMixin, RegistrationAdjustments
                 'errors': errors,
             })
 
-        # If new values for optional registration parameters have been passed,
-        # then update them.
-        for key in reg_nullable_keys + reg_bool_keys:
-            if post_data.get(key, None):
-                setattr(reg, key, post_data[key])
-
-        # Update expiration date for this registration (will also be updated in)
-        # session data.
-        expiry = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
-        reg.expirationDate = expiry
+        # Update expiration date for this invoice (will also be updated in
+        # session data).  Also reset all totals to 0 (will be populated by signal handlers.)
+        invoice.expirationDate = (
+            timezone.now() +
+            timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
+        )
+        for attr in ['grossTotal', 'total', 'taxes', 'adjustments', 'fees']:
+            setattr(invoice, attr, 0)
 
         if regSession.get('marketing_id'):
-            reg.data.update({'marketing_id': regSession.pop('marketing_id', None)})
+            self.invoice.data.update({'marketing_id': regSession.pop('marketing_id', None)})
 
-        # Should be a list of dictionaries describing event registrations,
-        # either existing or to be created.  Some keys are intended to be boolean
+        # Some keys are intended to be boolean
         # but are passed as strings, so handle those as well to avoid
         # unexpected behavior.
-        event_post = post_data.get('events')
-        for e in event_post:
-            for k in ['dropIn', 'requireFull']:
-                if isinstance(e.get(k, None), str):
-                    e[k] = ('true' in e[k].lower())
+        for x in post_data.get('items', []):
+            for k in ['dropIn', 'requireFull', 'autoSubmit', 'autoFulfill',]:
+                if isinstance(x.get(k, None), str):
+                    x[k] = ('true' in x[k].lower())
 
-        eventregs = TemporaryEventRegistration.objects.filter(
-            id__in=[x['eventreg'] for x in event_post if x.get('eventreg', None)]
+        # Should be a list of dictionaries describing event registrations,
+        # either existing or to be created.
+        item_post = post_data.get('items')
+        existing_items = InvoiceItem.objects.filter(
+            id__in=[x['id'] for x in item_post if x.get('id', None)]
         )
-        events = Event.objects.filter(
-            id__in=[x['event'] for x in event_post if x.get('event', None)]
+
+        # TODO: This should be determined internally in the view so it cannot
+        # be modified by the user.
+        response.update({
+            'payAtDoor': post_data.get('payAtDoor', False),
+        })
+
+        # Pass the response dictionary over to handle registrations.  The method
+        # passes the dictionary back to us with any necessary updates.  Keys
+        # beginning with "__relateditem" can be used to hold related items such
+        # as associated models.  Keys beginning with "__related" will be removed
+        # from the response dictionary before it is converted to JSON and returned
+        # to the user.  Note also that although the dictionaries and objects
+        # passed to linkRegistration and the signal handlers can be modified
+        # within the handler, this is an anti-pattern.  It is preferred to return
+        # a response dictionary in a response of the form
+        # {'status': 'success', 'response': 'response'}, which is used to update
+        # the overall response in AjaxClassRegistrationView.
+        signal_response = self.linkRegistration(invoice, post_data)
+        if signal_response.get('status') != 'success':
+            errors += signal_response.get('errors', [])
+        else:
+            response.update(signal_response.get('response',{}))
+
+        # Fill the set of related items (such as the set of events). It is
+        # strongly recommended that handlers of this signal use the dispatch_uid
+        # parameter to ensure that they are not called more than once.
+        signal_responses = get_invoice_related.send(
+            sender=AjaxClassRegistrationView,
+            invoice=invoice, post_data=post_data, prior_response=response,
+            request=request
         )
 
-        grossPrice = 0
-        existing_eventreg_ids = list(reg.temporaryeventregistration_set.values_list('id', flat=True))
-        unmatched_eventreg_ids = existing_eventreg_ids.copy()
+        for s in signal_responses:
+            if isinstance(s[1], dict) and s[1].get('status') != 'success':
+                errors += s[1].get('errors', [])
+            elif isinstance(s[1], dict):
+                response.update(s[1].get('response', {}))
 
-        for e in event_post:
-            try:
-                this_event = events.get(id=e['event'])
-            except ObjectDoesNotExist:
-                errors.append({
-                    'code': 'invalid_event_id',
-                    'message': _('Invalid event ID passed.')
-                })
-                continue
+        # We now have an invoice and any related items (such as a Registration
+        # or MerchOrder) that need to be linked to that Registration.  Loop
+        # through the set of passed items and either create
+        # InvoiceItems/EventRegistrations for them, or update existing ones.
+        existing_item_ids = list(invoice.invoiceitem_set.values_list('id', flat=True))
+        unmatched_item_ids = existing_item_ids.copy()
 
-            # The existing event registration should be found if its ID is passed.
-            # Otherwise, update an existing one.
-            created_eventreg = False
+        # This list will be populated with the response dictionaries to be sent
+        # back to the view related to each individual item.  This method
+        # populates a few key fields, but additional fields may be specified
+        # by signal handlers that are called to process each item in the cart.
+        items_response = []
 
-            if e.get('eventreg', None):
+        for i in item_post:
+
+            if i.get('id', None):
                 try:
-                    this_eventreg = eventregs.get(id=e['eventreg'])
-                    logger.debug('Found existing temporary event registration: {}'.format(this_eventreg.id))
-                    unmatched_eventreg_ids.remove(this_eventreg.id)
-                except [ObjectDoesNotExist, ValueError]:
+                    this_item = existing_items.get(id=i['id'])
+                    logger.debug('Found existing invoice item: {}'.format(this_item.id))
+                    unmatched_item_ids.remove(this_item.id)
+                except (ObjectDoesNotExist, ValueError):
                     errors.append({
-                        'code': 'invalid_eventreg_id',
-                        'message': _('Invalid event registration ID passed.')
+                        'code': 'invalid_item_id',
+                        'message': _('Invalid invoice item ID passed.')
                     })
-                    continue
+                    break
             else:
-                # Before continuing, enforce rules on duplicate registrations, etc.
-                dropIn = e.get('dropIn', False)
-                # Check the other eventregistrations in POST data to ensure
-                # that this is the only one for this event.
-                same_event = [x for x in event_post if x.get('event', None) == this_event.id]
+                this_item = InvoiceItem(invoice=invoice)
 
-                if len(same_event) > 1 and ((
-                    this_event.polymorphic_ctype.model == 'series' and not dropIn and (
-                        (getConstant('registration__multiRegSeriesRule') == 'N') or
-                        (getConstant('registration__multiRegSeriesRule') == 'D' and not reg.payAtDoor)
-                    )
-                ) or (
-                    this_event.polymorphic_ctype.model == 'publicevent' and not dropIn and (
-                        (getConstant('registration__multiRegPublicEventRule') == 'N') or
-                        (getConstant('registration__multiRegPublicEventRule') == 'D' and not reg.payAtDoor)
-                    )
-                ) or (
-                    dropIn and (
-                        (getConstant('registration__multiRegDropInRule') == 'N') or
-                        (getConstant('registration__multiRegDropInRule') == 'D' and not reg.payAtDoor)
-                    )
-                )):
-                    errors.append({
-                        'code': 'duplicate_event',
-                        'message': _(
-                            'You cannot register more than once for event: {event_name}. '.format(
-                                event_name=this_event.name
-                            ) +
-                            'Please remove the existing item from your cart and try again.'
-                        )
-                    })
-                    continue
-                elif (
-                    len(same_event) > 1 and
-                    len([x for x in same_event if x.get('dropIn', False) != dropIn]) > 0
-                ):
-                    errors.append({
-                        'code': 'dropin_with_full',
-                        'message': _(
-                            'You cannot register as both a drop-in and as a ' +
-                            'full registrant for event: {event_name}. '.format(
-                                event_name=this_event.name
-                            ) +
-                            'Please remove the existing item from your cart and try again.'
-                        )
-                    })
-                    continue
+            # The response data will be updated by the signal handlers below,
+            # and it will also need to be updated after the item is saved.
+            this_item_response = {
+                'requireFull': i.get('requireFull', None),
+                'paymentMethod': i.get('paymentMethod', None),
+                'autoSubmit': i.get('autoSubmit', None),
+                'choiceId': i.get('choiceId', None),
+                '__item': this_item,
+            }
 
-                logger.debug('Creating temporary event registration for event: {}'.format(this_event.id))
-                this_eventreg = TemporaryEventRegistration(event=this_event)
-                created_eventreg = True
+            # Reset all item totals to 0 (will be populated by the signal handler)
+            for attr in ['grossTotal', 'total', 'taxes', 'adjustments', 'fees']:
+                setattr(this_item, attr, 0)
 
-            if not (
-                this_event.registrationOpen or
-                request.user.has_perm('core.override_register_closed')
-            ):
-                errors.append({
-                    'code': 'registration_closed',
-                    'message': _('Registration is closed for event {}.'.format(this_event.id))
+            # Add key parameters from the item JSON to the Invoice item data.
+            this_item.data.update({
+                'choiceId': i.get('choiceId', None),
+                'requireFull': i.get('requireFull', True),
+            })
+            if i.get('paymentMethod', None):
+                this_item.data.update({
+                    'paymentMethod': i.get('paymentMethod'),
+                    'autoSubmit': i.get('autoSubmit', None),
                 })
 
-            if (
-                created_eventreg and this_event.soldOut and not
-                request.user.has_perm('core.override_register_soldout')
-            ):
-                errors.append({
-                    'code': 'sold_out',
-                    'message': _('Event {} is sold out.'.format(this_event.id))
-                })
+            if i.get('type') == 'eventRegistration':
+                signal_response = self.linkEventRegistration(
+                    item=this_item, item_data=i, post_data=post_data,
+                    prior_response=response, request=request
+                )
+                if signal_response.get('status') != 'success':
+                    # Add the errors but avoid duplicates from things like
+                    # duplicate event registrations.
+                    for error in signal_response.get('errors', []):
+                        errors.append(error) if error not in errors else errors
+                this_item_response.update(signal_response.get('response',{}))
 
-            this_role = e.get('roleId', None)
-            if (
-                created_eventreg and
-                this_event.soldOutForRole(this_role, includeTemporaryRegs=True) and not
-                request.user.has_perm('core.override_register_soldout')
-            ):
-                errors.append({
-                    'code': 'sold_out_role',
-                    'message': _('Event {} is sold out for role {}.'.format(this_event.id, this_role))
-                })
+            signal_responses = get_invoice_item_related.send(
+                sender=AjaxClassRegistrationView,
+                item=this_item, item_data=i, post_data=post_data,
+                prior_response=response, request=request
+            )
 
-            # Check that the user can register for drop-ins, and that drop-ins are
-            # either enabled, or they have override permissions.
-            dropIn = e.get('dropIn', False)
-            if not isinstance(this_event, Series) and dropIn:
-                errors.append({
-                    'code': 'invalid_dropin',
-                    'message': _('Cannot register as a drop-in for events that are not class series.')
-                })
-            elif (dropIn and (
-                    not request.user.has_perm('core.register_dropins') or
-                    (
-                        not this_event.allowDropins and not
-                        request.user.has_perm('override_register_dropins')
-                    )
-            )):
-                errors.append({
-                    'code': 'no_dropin_permission',
-                    'message': _('You are not permitted to register for drop-in classes.')
-                })
+            for s in signal_responses:
+                if isinstance(s[1], dict) and s[1].get('status', None) != 'success':
+                    errors += s[1].get('errors', [])
+                elif isinstance(s[1], dict):
+                    this_item_response.update(s[1].get('response', {}))
+            items_response.append(this_item_response)
 
-            # No need to continue if we've already identified errors
-            if errors:
-                continue
-
-            # Update the contents of the event registration.
-            if dropIn:
-                this_eventreg.dropIn = True
-                this_eventreg.price = price = this_event.getBasePrice(dropIns=1)
-            else:
-                this_eventreg.dropIn = False
-                this_eventreg.price = this_event.getBasePrice(payAtDoor=reg.payAtDoor)
-                this_eventreg.role = DanceRole.objects.filter(id=this_role).first()
-
-            # Sometimes requireFull is passed as a string and sometimes as boolean,
-            # this just ensures that it works correctly either way.  Also,
-            # record payment methods if they were passed.
-            this_eventreg.data['requireFull'] = (str(e.get('requireFull', 'True')).lower() == 'true')
-            if e.get('paymentMethod', None):
-                this_eventreg.data['paymentMethod'] = e['paymentMethod']
-                this_eventreg.data['autoSubmit'] = e.get('autoSubmit', None)
-            if e.get('doorChoiceId', None):
-                this_eventreg.data['doorChoiceId'] = e['doorChoiceId']
-
-            if e.get('data', False):
-                if isinstance(e['data'], dict):
-                    this_eventreg.data.update(e['data'])
-                else:
-                    try:
-                        this_eventreg.data.update(json.loads(e['data']))
-                    except json.decoder.JSONDecodeError:
-                        errors.append({
-                            'code': 'invalid_json',
-                            'message': _('You have passed invalid JSON data for this registation.')
-                        })
-
-            self.event_registrations.append(this_eventreg)
-            grossPrice += this_eventreg.price
-
-        # We now have a registration, but before going further, return failure
-        # if any errors have arisen.
+        # We now have an Invoice and the set of invoice items, but before going
+        # further, return failure if any errors have arisen.
         if errors:
             return JsonResponse({
                 'status': 'failure',
                 'errors': errors,
             })
 
-        # If we got this far with no issues, then save everything.  Delete any
-        # existing associated TemporaryEventRegistrations that were not passed
-        # in via POST.
-        reg.priceWithDiscount = grossPrice
-        reg.save()
-        reg.temporaryeventregistration_set.filter(id__in=unmatched_eventreg_ids).delete()
+        # Add the item-related responses to the overall response dictionary.
+        response['items'] = items_response
 
-        for er in self.event_registrations:
-            er.registration = reg
-            er.save()
+        # If we got this far with no issues, then save the invoice and invoice
+        # items.  Delete any existing associated InvoiceItems whose IDs were not
+        # passed in via POST.  Also, put the identifiers for the invoice and
+        # invoice items into the response dictionary along with item level prices.
+        # The invoice total is always updated at the end, so we pass a flag that
+        # prevents it from being saved every time an item is saved.
+        invoice.save()
+        for key, value in response.items():
+            if isinstance(key, str) and key.startswith('__relateditem'):
+                value.save()
+        for i in response.get('items', []):
+            this_invoice_item = i.pop('__item', None)
+            if isinstance(this_invoice_item, InvoiceItem):
+                this_invoice_item.save(updateInvoiceTotals=False)
+                i.update({
+                    'id': str(this_invoice_item.id),
+                    'grossTotal': this_invoice_item.grossTotal,
+                })
+            for key, value in i.items():
+                if isinstance(key, str) and key.startswith('__relateditem'):
+                    value.save()
 
-        # Put this in a property in case the get_success_url() method needs it.
-        self.temporaryRegistration = reg
+        # Delete any items that are no longer in the POST data and ensure that
+        # the Invoice totals are kept in sync.
+        invoice.invoiceitem_set.filter(id__in=unmatched_item_ids).delete()
+        items_queryset = invoice.updateTotals()
 
-        reg_response = {
-            'id': reg.id,
-            'payAtDoor': reg.payAtDoor,
-            'subtotal': grossPrice,
-            'total': grossPrice,
-            'itemCount': len(self.event_registrations),
-            'events': [
-                {
-                    'event': x.event.id, 'name': x.event.name,
-                    'eventreg': x.id,
-                    'dropIn': x.dropIn, 'roleId': getattr(x.role, 'id', None),
-                    'roleName': getattr(x.role, 'name', None), 'price': x.price,
-                    'requireFull': x.data.get('requireFull', True),
-                    'paymentMethod': x.data.get('paymentMethod', None),
-                    'autoSubmit': x.data.get('autoSubmit', None),
-                    'doorChoiceId': x.data.get('doorChoiceId', None),
-                }
-                for x in self.event_registrations
-            ],
-        }
+        # If a transaction is associated with event registration, then process
+        # discount, addons, and vouchers
+        reg = response.pop('__relateditem_registration', None)
 
         # Pass back student status.
-        if reg.student:
-            reg_response.update({'student': reg.student})
+        if getattr(reg, 'student', False):
+            response.update({'student': reg.student})
 
-        discount_codes, total_discount_amount, discounted_total = self.getDiscounts(
-            reg, grossPrice
+        # Pop out keys associated with related items that are no longer needed,
+        # since once the signal handlers are complete the remaining logic does
+        # not use them.
+        list_keys = list(response.keys())
+        for key in list_keys:
+            if key.startswith('__related'):
+                response.pop(key)
+
+        for i in response.get('items', []):
+            list_keys = list(i.keys())
+            for key in list_keys:
+                if key.startswith('__related'):
+                    i.pop(key)
+
+        discount_codes, total_discount_amount = self.getDiscounts(
+            invoice, registration=reg
         )
         if total_discount_amount > 0:
-
-            reg_response.update({
+            response.update({
                 'discounts': [
                     {
                         'name': x.code.name,
@@ -726,54 +746,63 @@ class AjaxClassRegistrationView(PermissionRequiredMixin, RegistrationAdjustments
                     for x in discount_codes
                 ],
                 'discount_amount': total_discount_amount,
-                'total': discounted_total,
+                'total': invoice.grossTotal - total_discount_amount,
             })
 
-        addons = self.getAddons(reg)
+            # Update totals (without saving anything), so that taxes are
+            # recalculated and the invoice handler knows how much to apply.
+            if not post_data.get('finalize', False):
+                items_queryset = invoice.updateTotals(
+                    save=False, prior_queryset=items_queryset,
+                    allocateAmounts={'total': -1*total_discount_amount}
+                )
+
+        addons = self.getAddons(invoice, reg)
         if addons:
-            reg_response.update({
+            response.update({
                 'addonItems': addons,
             })
 
-        voucherId = post_data.get('voucherId', None)
+        voucherId = post_data.get('voucher', {}).get('voucherId', None)
         if voucherId:
-            # This will only find a customer if all three are specified.
-            customer = Customer.objects.filter(
-                first_name=post_data.get('firstName', None),
-                last_name=post_data.get('lastName', None),
-                email=post_data.get('email', None)
-            ).first()
+            response.update({
+                'voucher': self.getVoucher(
+                    voucherId, invoice, 0,
+                    post_data.get('firstName', None),
+                    post_data.get('lastName', None),
+                    post_data.get('email', None),
+                ),
+            })
 
-            voucher_response = check_voucher.send(
-                sender=AjaxClassRegistrationView, voucherId=voucherId,
-                customer=customer, validateCustomer=(customer is not None),
-                registration=reg
-            )
-            voucher_response = [x[1] for x in voucher_response if len(x) > 1 and x[1]]
-            if (len(voucher_response) > 1):
-                # This shouldn't happen
-                logger.error('Received multiple voucher responses from signal handler.')
-            elif voucher_response:
-                if (
-                    voucher_response[0].get('status', None) == 'valid' and
-                    voucher_response[0].get('available', 0) > 0
-                ):
-                    total = max(
-                        0, discounted_total - voucher_response[0].get('available', 0)
-                    )
+            if not post_data.get('finalize', False):
+                # Recalculate taxes, but do not save the invoice
+                # with the updates, since the voucher will only be applied later.
+                # We pass the queryset that was returned by previous calls to
+                # updateTotals(), so the update takes into account any discounts
+                # that were previously applied.
+                if response['voucher'].get('beforeTax'):
+                    allocateAmounts = {'total': -1*response['voucher'].get('voucherAmount', 0)}
                 else:
-                    total = discounted_total
+                    allocateAmounts = {'adjustments': -1*response['voucher'].get('voucherAmount', 0)}
+                items_queryset = invoice.updateTotals(
+                    save=False, allocateAmounts=allocateAmounts,
+                    prior_queryset=items_queryset)
 
-                reg_response.update({
-                    'voucherId': voucher_response[0].get('id', None),
-                    'voucher': voucher_response[0],
-                    'voucher_amount': discounted_total - total,
-                    'total': total,
-                })
+        response.update({
+            'id': str(invoice.id),
+            'grossTotal': invoice.grossTotal,
+            'total': invoice.total,
+            'adjustments': invoice.adjustments,
+            'taxes': invoice.taxes,
+            'outstandingBalance': invoice.outstandingBalance,
+            'buyerPaysSalesTax': invoice.buyerPaysSalesTax,
+            'itemCount': len(response.get('items', []))
+        })
 
+        # Format the response for return to the page that called this view 
         response_dict = {
             'status': 'success',
-            'reg': reg_response,
+            'invoice': response,
         }
 
         # Pass the redirect URL and send the voucher ID to session data if
@@ -786,50 +815,378 @@ class AjaxClassRegistrationView(PermissionRequiredMixin, RegistrationAdjustments
             # requireFull, and if all of them are False.
             requireFullRegistration = (
                 True in
-                [x.get('requireFull', True) for x in event_post]
+                [x.get('requireFull', True) for x in item_post]
             )
 
             # If all events are to be registered using the same payment method
             # and auto-submit is always True, then pass this info to the registration.
-            methods = [x.get('paymentMethod', None) for x in event_post]
+            methods = [x.get('paymentMethod', None) for x in item_post]
             if len(set(methods)) == 1 and methods[0]:
                 data_changed_flag = True
-                reg.data['paymentMethod'] = methods[0]
+                invoice.data['paymentMethod'] = methods[0]
 
                 if False not in [
-                    x.get('autoSubmit', False) for x in event_post
+                    x.get('autoSubmit', False) for x in item_post
                 ]:
-                    reg.data['autoSubmit'] = True
+                    invoice.data['autoSubmit'] = True
 
             if not requireFullRegistration:
 
                 # Update the registration to put the voucher code in data if
                 # needed so that the Temporary Voucher Use is created before
                 # we proceed to the summary page.
-                if response_dict['reg'].get('voucherId', None):
+                if response.get('voucher', {}).get('voucherId', None):
+                    invoice.data['gift'] = response['voucher']['voucherId']
                     data_changed_flag = True
-                    reg.data['gift'] = response_dict['reg']['voucherId']
 
                 if data_changed_flag:
-                    reg.save()
+                    invoice.save()
 
                 post_student_info.send(
                     sender=AjaxClassRegistrationView,
-                    registration=self.temporaryRegistration,
+                    invoice=invoice, registration=reg
                 )
                 response_dict['redirect'] = reverse('showRegSummary')
             else:
                 if data_changed_flag:
-                    reg.save()
+                    invoice.save()
                 response_dict['redirect'] = reverse('getStudentInfo')
 
-            regSession["voucher_id"] = reg_response.get('voucherId', None)
+            regSession["voucher_id"] = response.get('voucher', {}).get('voucherId', None)
 
-        regSession["temporaryRegistrationId"] = reg.id
-        regSession["temporaryRegistrationExpiry"] = expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
-        self.request.session[REG_VALIDATION_STR] = regSession
+        regSession["invoiceId"] = invoice.id.__str__()
+        regSession["invoiceExpiry"] = invoice.expirationDate.strftime('%Y-%m-%dT%H:%M:%S%z')
+        regSession["payAtDoor"] = response.get('payAtDoor', False)
+        request.session[REG_VALIDATION_STR] = regSession
 
         return JsonResponse(response_dict)
+
+    def linkRegistration(self, invoice, post_data):
+        '''
+        This method checks to see whether a registration is needed for this
+        transaction, and whether one already exists.  It returns a Registration.
+        '''
+
+        # Used for specifying defaults
+        reg_nullable_keys = ['howHeardAboutUs',]
+        reg_bool_keys = ['payAtDoor',]
+
+        eventreg_items = [x for x in post_data.get('items', []) if x.get('type', None) == 'eventRegistration']
+        if not eventreg_items:
+            return {}
+
+        # Most transactions involve signing up for classes and events.  If so,
+        # then we need to ensure that there is a Registration instance
+        # associated with this invoice.
+        response = {
+            '__related_events': Event.objects.filter(
+                id__in=[x.get('event') for x in eventreg_items if x.get('event', None)]
+            ),
+        }
+
+        try:
+            reg = Registration.objects.get(invoice=invoice)
+
+            # If new values for optional registration parameters have been passed,
+            # then update them.
+            for key in reg_nullable_keys + reg_bool_keys:
+                if post_data.get(key, None):
+                    setattr(reg, key, post_data[key])
+        except ObjectDoesNotExist:
+            # Pass the POST and specify defaults.
+            reg_defaults = {key: post_data.get(key, None) for key in reg_nullable_keys}
+            reg_defaults.update({key: post_data.get(key, False) for key in reg_bool_keys})
+
+            reg_defaults.update({
+                'invoice': invoice,
+                'submissionUser': invoice.submissionUser,
+                'dateTime': timezone.now(),
+                'comments': post_data.get('comments', ''),
+                'data': {},
+                'final': False,
+            })
+
+            # Create a new Registration (not finalized)
+            reg = Registration(**reg_defaults)
+        response['__relateditem_registration'] = reg
+        return {'status': 'success', 'response': response}
+
+    def linkEventRegistration(self, item, item_data, post_data, prior_response, request):
+        '''
+        This method checks whether an event registration can be added based on
+        rules regarding drop-ins, multiple registration, etc.
+        '''
+        errors = []
+        response = {'type': 'eventRegistration'}
+
+        events = prior_response.get('__related_events', Event.objects.none())
+        registration = prior_response.get('__relateditem_registration')
+
+        if not registration:
+            errors.append({
+                'code': 'no_registration',
+                'message': _('No registration set to link registration-related items.'),
+            })
+
+        try:
+            this_event = events.get(id=item_data.get('event', None))
+            response.update({
+                'event': this_event.id,
+                'description': this_event.name,
+            })
+        except ObjectDoesNotExist:
+            errors.append({
+                'code': 'invalid_event_id',
+                'message': _('Invalid event ID passed.'),
+            })
+            this_event = None
+
+        if errors:
+            return {'status': 'failure', 'errors': errors}
+
+        # Before continuing, we enforce rules on duplicate registrations, etc.
+        # To do this, we need to know the drop-in status of the registration as
+        # well as the associated role.
+        response['dropIn'] = item_data.get('dropIn', False)
+
+        # Pass back information about how automatic check-in should proceed.
+        for v in ['dropInOccurrence', 'checkInType', 'checkInOccurrence']:
+            response[v] = item_data.get(v, None)
+
+        this_role = None
+
+        if item_data.get('roleId', None):
+            try:
+                this_role = DanceRole.objects.get(id=item_data.get('roleId', None))
+                response.update({
+                    'roleId': this_role.id,
+                    'roleName': this_role.name,
+                })
+            except ObjectDoesNotExist:
+                errors.append({
+                    'code': 'invalid_role',
+                    'message': _('Invalid role specified.')
+                })
+
+        # Check the other eventregistrations in POST data to ensure
+        # that this is the only one for this event.
+        same_event = [x for x in post_data.get('items',[]) if x.get('event', None) == this_event.id]
+
+        if len(same_event) > 1 and ((
+            this_event.polymorphic_ctype.model == 'series' and not response['dropIn'] and (
+                (getConstant('registration__multiRegSeriesRule') == 'N') or
+                (
+                    getConstant('registration__multiRegSeriesRule') == 'D' and not
+                    registration.payAtDoor
+                )
+            )
+        ) or (
+            this_event.polymorphic_ctype.model == 'publicevent' and not response['dropIn'] and (
+                (getConstant('registration__multiRegPublicEventRule') == 'N') or
+                (
+                    getConstant('registration__multiRegPublicEventRule') == 'D' and not
+                    registration.payAtDoor
+                )
+            )
+        ) or (
+            response['dropIn'] and (
+                (getConstant('registration__multiRegDropInRule') == 'N') or
+                (
+                    getConstant('registration__multiRegDropInRule') == 'D' and not
+                    registration.payAtDoor
+                )
+            )
+        )):
+            this_code = 'duplicate_event_%s' % this_event.id
+
+            if getConstant('registration__multiRegNameFormRule') == 'Y':
+
+                # Add a messages unless one already exists.
+                storage = messages.get_messages(request)
+                existing = [x for x in storage if this_code in x.extra_tags]
+                storage.used = False
+
+                if not existing:
+                    messages.info(
+                        request, gettext(
+                            'Note: You cannot register more than once under the same name ' +
+                            'for event {event_name}. '.format(event_name=this_event.name) +
+                            'Please ensure that you enter the correct names for ' +
+                            'each registration in the next step.'
+                        ),
+                        extra_tags=this_code
+                    )
+            else:
+                errors.append({
+                    'code': this_code,
+                    'message': _(
+                        'You cannot register more than once for event: {event_name}. '.format(
+                            event_name=this_event.name
+                        ) +
+                        'Please remove the existing item from your cart and try again.'
+                    )
+                })
+
+        elif (
+            len(same_event) > 1 and
+            len([x for x in same_event if x.get('dropIn', False) != response['dropIn']]) > 0
+        ):
+            this_code = 'dropin_with_full_%s' % this_event.id
+
+            if getConstant('registration__multiRegNameFormRule') == 'Y':
+
+                # Add a messages unless one already exists.
+                storage = messages.get_messages(request)
+                existing = [x for x in storage if this_code in x.extra_tags]
+                storage.used = False
+
+                if not existing:
+                    messages.info(
+                        request, gettext(
+                            'Note: You cannot register as both a drop-in and as a ' +
+                            'full registrant for event {event_name}. '.format(event_name=this_event.name) +
+                            'Please ensure that you enter the correct names for ' +
+                            'each registration in the next step.'
+                        ),
+                        extra_tags=this_code
+                    )
+            else:
+                errors.append({
+                    'code': this_code,
+                    'message': _(
+                        'You cannot register as both a drop-in and as a ' +
+                        'full registrant for event: {event_name}. '.format(
+                            event_name=this_event.name
+                        ) +
+                        'Please remove the existing item from your cart and try again.'
+                    )
+                })
+
+        if not (
+            this_event.registrationOpen or
+            request.user.has_perm('core.override_register_closed')
+        ):
+            errors.append({
+                'code': 'registration_closed',
+                'message': _('Registration is closed for event {}.'.format(this_event.id))
+            })
+
+        # Check that the user can register for drop-ins, and that drop-ins are
+        # either enabled, or they have override permissions.
+        if not isinstance(this_event, Series) and response['dropIn']:
+            errors.append({
+                'code': 'invalid_dropin',
+                'message': _('Cannot register as a drop-in for events that are not class series.')
+            })
+        elif (response['dropIn'] and (
+                not request.user.has_perm('core.register_dropins') or
+                (
+                    not this_event.allowDropins and not
+                    request.user.has_perm('override_register_dropins')
+                )
+        )):
+            errors.append({
+                'code': 'no_dropin_permission',
+                'message': _('You are not permitted to register for drop-in classes.')
+            })
+
+        if errors:
+            return {'status': 'error', 'errors': errors}
+
+        # Since there are no errors, we can proceed to find an existing
+        # EventRegistration or to create a new one.
+        created_eventreg = False
+
+        this_eventreg = EventRegistration.objects.filter(invoiceItem=item).first()
+
+        if not this_eventreg:
+            logger.debug('Creating event registration for event: {}'.format(this_event.id))
+            this_eventreg = EventRegistration(
+                event=this_event,
+                invoiceItem=item,
+                registration=registration,
+            )
+            created_eventreg = True
+
+        if this_eventreg.event != this_event:
+            errors.append({
+                'code': 'event_mismatch',
+                'message': _('Existing event registration is for a different event.'),
+            })
+        if this_eventreg.registration != registration:
+            errors.append({
+                'code': 'registration_mismatch',
+                'message': _('Existing event registration is associated with a different registration.'),
+            })
+
+        if errors:
+            return {'status': 'error', 'errors': errors}
+
+        # Update the contents of the event registration and the invoice item.
+        if response['dropIn']:
+            this_eventreg.dropIn = True
+            item.grossTotal = this_event.getBasePrice(dropIns=1)
+            this_eventreg.role = this_role
+
+            # We cannot add occurrences to the many-to-many relationship until
+            # after the event registration has been saved.  So, we add it to
+            # the EventRegistration data for now.
+            if item_data.get('dropInOccurrence'):
+                this_eventreg.data['__dropInOccurrences'] = [item_data['dropInOccurrence'],]
+        else:
+            this_eventreg.dropIn = False
+            item.grossTotal = this_event.getBasePrice(payAtDoor=registration.payAtDoor)
+            this_eventreg.role = this_role
+
+        if post_data.get('student', False):
+            this_eventreg.student = post_data.get('student')
+
+        if item_data.get('checkInType') in ['E', 'S'] and item_data.get('checkInOccurrence'):
+            this_eventreg.data['__checkInOccurrence'] = item_data['checkInOccurrence']
+        elif item_data.get('checkInType') == 'F':
+            this_eventreg.data['__checkInEvent'] = True
+
+        item.total = item.grossTotal
+        item.taxRate = getConstant('registration__salesTaxRate') or 0
+        item.calculateTaxes()
+
+        if item_data.get('data', False):
+            if isinstance(item_data['data'], dict):
+                this_eventreg.data.update(item_data['data'])
+            else:
+                try:
+                    this_eventreg.data.update(json.loads(item_data['data']))
+                except json.decoder.JSONDecodeError:
+                    errors.append({
+                        'code': 'invalid_json',
+                        'message': _('You have passed invalid JSON data for this registation.')
+                    })
+
+        if (
+            created_eventreg and this_event.soldOut and not
+            request.user.has_perm('core.override_register_soldout')
+        ):
+            errors.append({
+                'code': 'sold_out',
+                'message': _('Event {} is sold out.'.format(this_event.id))
+            })
+
+        if (
+            created_eventreg and
+            this_event.soldOutForRole(this_role, includeTemporaryRegs=True) and not
+            request.user.has_perm('core.override_register_soldout')
+        ):
+            errors.append({
+                'code': 'sold_out_role',
+                'message': _('Event {} is sold out for role {}.'.format(this_event.id, this_role))
+            })
+
+        # Now that all checks are complete, return failure or success.
+        if errors:
+            return {'status': 'failure', 'errors': errors}
+
+        response['__relateditem_eventregistration'] = this_eventreg
+        return {'status': 'success', 'response': response}
 
 
 class SingleClassRegistrationReferralView(ReferralInfoMixin, RedirectView):
@@ -869,6 +1226,9 @@ class RegistrationSummaryView(
 ):
     template_name = 'core/registration_summary.html'
 
+    # Ensures that customer-specific discounts are applied at this stage
+    customers_final = True
+
     def dispatch(self, request, *args, **kwargs):
         ''' Always check that the temporary registration has not expired '''
         regSession = self.request.session.get(REG_VALIDATION_STR, {})
@@ -877,154 +1237,470 @@ class RegistrationSummaryView(
             return HttpResponseRedirect(reverse('registration'))
 
         try:
-            reg = TemporaryRegistration.objects.get(
-                id=self.request.session[REG_VALIDATION_STR].get('temporaryRegistrationId')
-            )
+            invoice = Invoice.objects.get(id=self.request.session[REG_VALIDATION_STR].get('invoiceId'))
         except ObjectDoesNotExist:
-            messages.error(request, _('Invalid registration identifier passed to summary view.'))
+            messages.error(request, _('Invalid invoice identifier passed to summary view.'))
             return HttpResponseRedirect(reverse('registration'))
 
         expiry = parse_datetime(
-            self.request.session[REG_VALIDATION_STR].get('temporaryRegistrationExpiry', ''),
+            self.request.session[REG_VALIDATION_STR].get('invoiceExpiry', ''),
         )
         if not expiry or expiry < timezone.now():
             messages.info(request, _('Your registration session has expired. Please try again.'))
             return HttpResponseRedirect(reverse('registration'))
 
+        reg = Registration.objects.filter(invoice=invoice).first()
+
         # If OK, pass the registration and proceed
         kwargs.update({
             'reg': reg,
+            'invoice': invoice,
         })
-        return super(RegistrationSummaryView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
         reg = kwargs.get('reg')
+        invoice = kwargs.get('invoice')
 
-        initial_price = sum([x.price for x in reg.temporaryeventregistration_set.all()])
+        discount_codes = None
+        total_discount_amount = 0
+        addons = []
 
-        discount_codes, total_discount_amount, discounted_total = self.getDiscounts(
-            reg, initial_price
-        )
-        addons = self.getAddons(reg)
-
-        for discount in discount_codes:
-            apply_discount.send(
-                sender=RegistrationSummaryView,
-                discount=discount.code,
-                discount_amount=discount.discount_amount,
-                registration=reg,
+        if reg:
+            discount_codes, total_discount_amount = self.getDiscounts(
+                invoice, registration=reg
             )
+            addons = self.getAddons(invoice, reg)
+
+            for discount in discount_codes:
+                apply_discount.send(
+                    sender=RegistrationSummaryView,
+                    discount=discount.code,
+                    discount_amount=discount.discount_amount,
+                    registration=reg,
+                )
 
         # The return value to this signal should contain any adjustments that
         # need to be made to the price (e.g. from vouchers if the voucher app
         # is installed)
         adjustment_responses = apply_price_adjustments.send(
             sender=RegistrationSummaryView,
+            invoice=invoice,
             registration=reg,
-            initial_price=discounted_total
+            prior_adjustment=-1*total_discount_amount,
         )
 
-        adjustment_list = []
-        adjustment_amount = 0
+        combined_response = {
+            'total_pretax': 0,
+            'total_posttax': 0,
+            'items': [],
+        }
 
         for response in adjustment_responses:
-            adjustment_list += response[1][0]
-            adjustment_amount += response[1][1]
+            combined_response['total_pretax'] += response[1].get('total_pretax', 0)
+            combined_response['total_posttax'] += response[1].get('total_posttax', 0)
+            combined_response['items'] += response[1].get('items', [])
 
-        # Save the discounted price to the database
-        total = discounted_total - adjustment_amount
-        reg.priceWithDiscount = total
-        reg.save()
+        # The updateTotals method allocates the total adjustment across the
+        # invoice items, and also recalculates the taxes for each item.
+        invoice.updateTotals(
+            allocateAmounts={
+                'total': -1*(combined_response['total_pretax'] + total_discount_amount),
+                'adjustments': -1*(combined_response['total_posttax']),
+            },
+            save=True,
+        )
 
         # Update the session key to keep track of this registration
         regSession = request.session[REG_VALIDATION_STR]
-        regSession["temp_reg_id"] = reg.id
-        if discount_codes:
-            regSession['discount_codes'] = [(x.code.name, x.code.pk, x.discount_amount) for x in discount_codes]
-        regSession['total_discount_amount'] = total_discount_amount
-        regSession['addons'] = addons
-        regSession['voucher_names'] = adjustment_list
-        regSession['total_voucher_amount'] = adjustment_amount
+        regSession["temp_invoice_id"] = invoice.id.__str__()
+        if reg:
+            regSession["temp_reg_id"] = reg.id
+            regSession['addons'] = addons
+            regSession['total_discount_amount'] = total_discount_amount
+            if discount_codes:
+                regSession['discount_codes'] = [
+                    (x.code.name, x.code.pk, x.discount_amount) for x in discount_codes
+                ]
+
+        regSession['vouchers'] = combined_response
         request.session[REG_VALIDATION_STR] = regSession
 
         return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
         ''' Pass the initial kwargs, then update with the needed registration info. '''
-        context_data = super(RegistrationSummaryView, self).get_context_data(**kwargs)
+        context_data = super().get_context_data(**kwargs)
 
         regSession = self.request.session[REG_VALIDATION_STR]
-        reg_id = regSession["temp_reg_id"]
-        reg = TemporaryRegistration.objects.get(id=reg_id)
+        invoice_id = regSession["temp_invoice_id"]
+        invoice = Invoice.objects.get(id=invoice_id)
+
+        reg_id = regSession.get("temp_reg_id",None)
+        if reg_id:
+            reg = Registration.objects.get(id=reg_id)
+        else:
+            reg = None
 
         discount_codes = regSession.get('discount_codes', None)
         discount_amount = regSession.get('total_discount_amount', 0)
-        voucher_names = regSession.get('voucher_names', [])
-        total_voucher_amount = regSession.get('total_voucher_amount', 0)
+        vouchers = regSession.get('vouchers', {})
         addons = regSession.get('addons', [])
 
-        isFree = (reg.priceWithDiscount == 0)
-        isComplete = (isFree or regSession.get('direct_payment', False) is True)
+        zeroBalance = (invoice.outstandingBalance == 0)
+        isComplete = (zeroBalance or regSession.get('direct_payment', False) is True)
 
         if isComplete:
-            # Create a new Invoice if one does not already exist.
-            new_invoice = Invoice.get_or_create_from_registration(
-                reg, status=Invoice.PaymentStatus.paid
-            )
-
             # Include the submission user if the user is authenticated
             if self.request.user.is_authenticated:
                 submissionUser = self.request.user
             else:
                 submissionUser = None
 
-            if isFree:
-                new_invoice.processPayment(
+            if zeroBalance:
+                invoice.processPayment(
                     amount=0, fees=0, submissionUser=submissionUser,
                     forceFinalize=True
                 )
             else:
-                amountPaid = reg.priceWithDiscount
+                amountPaid = invoice.total
                 paymentMethod = regSession.get('direct_payment_method', 'Cash')
 
                 this_cash_payment = CashPaymentRecord.objects.create(
-                    invoice=new_invoice, amount=amountPaid,
+                    invoice=invoice, amount=amountPaid,
                     status=CashPaymentRecord.PaymentStatus.collected,
                     paymentMethod=paymentMethod,
-                    payerEmail=reg.email,
+                    payerEmail=invoice.email,
                     submissionUser=submissionUser,
                     collectedByUser=submissionUser,
                 )
-                new_invoice.processPayment(
+                invoice.processPayment(
                     amount=amountPaid, fees=0, paidOnline=False,
                     methodName=paymentMethod, submissionUser=submissionUser,
                     collectedByUser=submissionUser,
                     methodTxn='CASHPAYMENT_%s' % this_cash_payment.recordId,
                     forceFinalize=True,
                 )
+            if reg:
+                # Ensures that the registration has a status that reflects the
+                # payment that has been processed
+                reg.refresh_from_db()
 
         context_data.update({
             'returnPage': self.get_return_page().get(
                 'url', reverse('registration')
             ),
             'registration': reg,
-            "totalPrice": reg.totalPrice,
-            'subtotal': reg.priceWithDiscount,
-            'taxes': reg.addTaxes,
-            "netPrice": reg.priceWithDiscountAndTaxes,
+            'invoice': invoice,
             "addonItems": addons,
             "discount_codes": discount_codes,
             "discount_code_amount": discount_amount,
-            "voucher_names": voucher_names,
-            "total_voucher_amount": total_voucher_amount,
-            "total_discount_amount": discount_amount + total_voucher_amount,
+            "vouchers": vouchers,
+            "total_discount_amount": discount_amount + vouchers.get('total_pretax', 0),
+            "total_adjustment_amount": vouchers.get('total_posttax', 0),
             "currencyCode": getConstant('general__currencyCode'),
-            'payAtDoor': reg.payAtDoor,
+            'payAtDoor': regSession.get('payAtDoor', False),
             'is_complete': isComplete,
-            'is_free': isFree,
+            'zero_balance': zeroBalance,
         })
 
         return context_data
+
+
+class PartnerRequiredView(RegistrationAdjustmentsMixin, FormView):
+    '''
+    When one or more events in a customer's registration have a partner
+    required, this page is used to collect partner name information for each
+    registrant to that event.
+    '''
+    form_class = PartnerRequiredForm
+    template_name = 'core/partner_required_form.html'
+
+    # Ensures that customer-specific discounts are applied at this stage
+    customers_final = True
+
+    def dispatch(self, request, *args, **kwargs):
+        '''
+        Require session data to be set to proceed, otherwise go back to step 1.
+        Because they have the same expiration date, this also implies that the
+        Registration object is not yet expired.
+        '''
+        if REG_VALIDATION_STR not in request.session:
+            return HttpResponseRedirect(reverse('registration'))
+
+        try:
+            self.invoice = Invoice.objects.get(
+                id=self.request.session[REG_VALIDATION_STR].get('invoiceId')
+            )
+        except ObjectDoesNotExist:
+            messages.error(request, _('Invalid invoice identifier passed to sign-up form.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        expiry = parse_datetime(
+            self.request.session[REG_VALIDATION_STR].get('invoiceExpiry', ''),
+        )
+        if not expiry or expiry < timezone.now():
+            messages.info(request, _('Your registration session has expired. Please try again.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        self.registration = Registration.objects.filter(
+            invoice=self.invoice
+        ).prefetch_related(
+            'eventregistration_set', 'eventregistration_set__event',
+            'eventregistration_set__customer'
+        ).first()
+
+        if not self.registration:
+            messages.error(request, _('Invalid registration passed to additional customer name form.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        self.partnerRequiredRegs = self.registration.eventregistration_set.filter(
+            event__partnerRequired=True
+        )
+
+        if not self.partnerRequiredRegs:
+            return HttpResponseRedirect(self.get_success_url())
+
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context_data = super().get_context_data(**kwargs)
+        reg = self.registration
+
+        payAtDoor = self.request.session[REG_VALIDATION_STR].get('payAtDoor', False)
+
+        discount_codes, total_discount_amount = self.getDiscounts(
+            self.invoice, registration=reg
+        )
+        addons = self.getAddons(self.invoice, reg)
+
+        # Update totals (without saving anything), so that taxes are
+        # recalculated and the invoice handler knows how much to apply.
+        items_queryset = self.invoice.updateTotals(
+            save=False, allocateAmounts={'total': -1*total_discount_amount}
+        )
+
+        # Get a voucher ID to check from the current contents of the form
+        voucherId = self.invoice.data.get('gift', None)
+
+        if voucherId:
+            context_data['voucher'] = self.getVoucher(voucherId, self.invoice)
+
+            # Recalculate taxes, but do not save the invoice
+            # with the updates, since the voucher will only be applied later.
+            if context_data['voucher'].get('beforeTax'):
+                allocateAmounts = {'total': -1*context_data['voucher'].get('voucherAmount', 0)}
+            else:
+                allocateAmounts = {'adjustments': -1*context_data['voucher'].get('voucherAmount', 0)}
+            items_queryset = self.invoice.updateTotals(
+                save=False, allocateAmounts=allocateAmounts,
+                prior_queryset=items_queryset
+            )
+
+        context_data.update({
+            'invoice': self.invoice,
+            'currencySymbol': getConstant('general__currencySymbol'),
+            'reg': reg,
+            'payAtDoor': payAtDoor,
+            'addonItems': addons,
+            'discount_codes': discount_codes,
+            'discount_code_amount': total_discount_amount,
+        })
+
+        return context_data
+
+    def get_form_kwargs(self, **kwargs):
+        ''' Pass along the request data to the form '''
+        kwargs = super().get_form_kwargs(**kwargs)
+        kwargs['partnerRequiredRegs'] = self.partnerRequiredRegs
+        return kwargs
+
+    def get_success_url(self):
+        return reverse('showRegSummary')
+
+    def form_valid(self, form):
+        '''
+        Even if this form is valid, the handlers for this form may have added messages
+        to the request.  In that case, then the page should be handled as if the form
+        were invalid.  Otherwise, update the session data with the form data and then
+        move to the next view
+        '''
+
+        # The session expires after a period of inactivity that is specified in preferences.
+        expiry = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
+        self.request.session[REG_VALIDATION_STR]["invoiceExpiry"] = \
+            expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
+        self.request.session.modified = True
+
+        for er in self.partnerRequiredRegs:
+            partner_data = {
+                'firstName': form.cleaned_data.pop('er_%s_partner_firstName' % er.id),
+                'lastName': form.cleaned_data.pop('er_%s_partner_lastName' % er.id)
+            }
+
+            customerId = form.cleaned_data.pop('er_%s_partner_customerId' % er.id, None)
+            if not Customer.objects.filter(id=customerId).exists():
+                customerId = None
+
+            if customerId:
+                partner_data['customerId'] = customerId
+
+            er.data['partner'] = partner_data
+            er.save()
+
+        return HttpResponseRedirect(self.get_success_url())  # Redirect after POST
+
+
+class MultiRegCustomerNameView(RegistrationAdjustmentsMixin, FormView):
+    '''
+    This page collects additional name and email information needed when there
+    are multiple EventRegistrations associated with an Invoice.  For each 
+
+    '''
+    form_class = MultiRegCustomerNameForm
+    template_name = 'core/multireg_customer_name_form.html'
+
+    def dispatch(self, request, *args, **kwargs):
+        '''
+        Require session data to be set to proceed, otherwise go back to step 1.
+        Because they have the same expiration date, this also implies that the
+        Registration object is not yet expired.
+        '''
+        if REG_VALIDATION_STR not in request.session:
+            return HttpResponseRedirect(reverse('registration'))
+
+        try:
+            self.invoice = Invoice.objects.get(
+                id=self.request.session[REG_VALIDATION_STR].get('invoiceId')
+            )
+        except ObjectDoesNotExist:
+            messages.error(request, _('Invalid invoice identifier passed to sign-up form.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        expiry = parse_datetime(
+            self.request.session[REG_VALIDATION_STR].get('invoiceExpiry', ''),
+        )
+        if not expiry or expiry < timezone.now():
+            messages.info(request, _('Your registration session has expired. Please try again.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        self.registration = Registration.objects.filter(
+            invoice=self.invoice
+        ).prefetch_related('eventregistration_set').first()
+
+        self.multiReg = (
+            self.registration and
+            self.registration.eventregistration_set.count() > 1
+        )
+
+        if not self.registration or not self.multiReg:
+            messages.error(request, _('Invalid registration passed to additional customer name form.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        self.partnerRequired = self.registration.eventregistration_set.filter(
+            event__partnerRequired=True
+        ).exists()
+
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context_data = super().get_context_data(**kwargs)
+        reg = self.registration
+
+        payAtDoor = self.request.session[REG_VALIDATION_STR].get('payAtDoor', False)
+
+        discount_codes, total_discount_amount = self.getDiscounts(
+            self.invoice, registration=reg
+        )
+        addons = self.getAddons(self.invoice, reg)
+
+        # Update totals (without saving anything), so that taxes are
+        # recalculated and the invoice handler knows how much to apply.
+        items_queryset = self.invoice.updateTotals(
+            save=False, allocateAmounts={'total': -1*total_discount_amount}
+        )
+
+        # Get a voucher ID to check from the current contents of the form
+        voucherId = self.invoice.data.get('gift', None)
+
+        if voucherId:
+            context_data['voucher'] = self.getVoucher(voucherId, self.invoice)
+
+            # Recalculate taxes, but do not save the invoice
+            # with the updates, since the voucher will only be applied later.
+            if context_data['voucher'].get('beforeTax'):
+                allocateAmounts = {'total': -1*context_data['voucher'].get('voucherAmount', 0)}
+            else:
+                allocateAmounts = {'adjustments': -1*context_data['voucher'].get('voucherAmount', 0)}
+            items_queryset = self.invoice.updateTotals(
+                save=False, allocateAmounts=allocateAmounts,
+                prior_queryset=items_queryset
+            )
+
+        context_data.update({
+            'invoice': self.invoice,
+            'currencySymbol': getConstant('general__currencySymbol'),
+            'reg': reg,
+            'payAtDoor': payAtDoor,
+            'addonItems': addons,
+            'discount_codes': discount_codes,
+            'discount_code_amount': total_discount_amount,
+        })
+
+        return context_data
+
+    def get_form_kwargs(self, **kwargs):
+        ''' Pass along the request data to the form '''
+        kwargs = super().get_form_kwargs(**kwargs)
+        kwargs['request'] = self.request
+        kwargs['registration'] = self.registration
+        kwargs['invoice'] = self.invoice
+        kwargs['multiReg'] = self.multiReg
+        return kwargs
+
+    def get_success_url(self):
+        if self.partnerRequired:
+            return reverse('partnerRequiredForm')
+        return reverse('showRegSummary')
+
+    def form_valid(self, form):
+        '''
+        Even if this form is valid, the handlers for this form may have added messages
+        to the request.  In that case, then the page should be handled as if the form
+        were invalid.  Otherwise, update the session data with the form data and then
+        move to the next view
+        '''
+
+        # The session expires after a period of inactivity that is specified in preferences.
+        expiry = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
+        self.request.session[REG_VALIDATION_STR]["invoiceExpiry"] = \
+            expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
+        self.request.session.modified = True
+
+        for er in self.registration.eventregistration_set.all():
+            firstName = form.cleaned_data.pop('er_%s_firstName' % er.id)
+            lastName = form.cleaned_data.pop('er_%s_lastName' % er.id)
+            email = form.cleaned_data.pop('er_%s_email' % er.id)
+            phone = form.cleaned_data.pop('er_%s_phone' % er.id, None)
+            student = form.cleaned_data.pop('er_%s_student' % er.id, False)
+
+            customer, created = Customer.objects.update_or_create(
+                first_name=firstName, last_name=lastName,
+                email=email, defaults={'phone': phone}
+            )
+            er.customer = customer
+            er.student = student
+            er.data.update(form.cleaned_data)
+            er.save()
+
+        # This signal allows vouchers to be applied temporarily, and it can
+        # be used for other tasks.  It is sent here because it has not been
+        # sent in the StudentInfoView if we got here.
+        post_student_info.send(
+            sender=StudentInfoView, invoice=self.invoice,
+            registration=self.registration
+        )
+        return HttpResponseRedirect(self.get_success_url())  # Redirect after POST
 
 
 class StudentInfoView(RegistrationAdjustmentsMixin, FormView):
@@ -1043,95 +1719,91 @@ class StudentInfoView(RegistrationAdjustmentsMixin, FormView):
         '''
         Require session data to be set to proceed, otherwise go back to step 1.
         Because they have the same expiration date, this also implies that the
-        TemporaryRegistration object is not yet expired.
+        Registration object is not yet expired.
         '''
         if REG_VALIDATION_STR not in request.session:
             return HttpResponseRedirect(reverse('registration'))
 
         try:
-            self.temporaryRegistration = TemporaryRegistration.objects.get(
-                id=self.request.session[REG_VALIDATION_STR].get('temporaryRegistrationId')
+            self.invoice = Invoice.objects.get(
+                id=self.request.session[REG_VALIDATION_STR].get('invoiceId')
             )
         except ObjectDoesNotExist:
-            messages.error(request, _('Invalid registration identifier passed to sign-up form.'))
+            messages.error(request, _('Invalid invoice identifier passed to sign-up form.'))
             return HttpResponseRedirect(reverse('registration'))
 
         expiry = parse_datetime(
-            self.request.session[REG_VALIDATION_STR].get('temporaryRegistrationExpiry', ''),
+            self.request.session[REG_VALIDATION_STR].get('invoiceExpiry', ''),
         )
         if not expiry or expiry < timezone.now():
             messages.info(request, _('Your registration session has expired. Please try again.'))
             return HttpResponseRedirect(reverse('registration'))
 
+        self.registration = Registration.objects.filter(
+            invoice=self.invoice
+        ).prefetch_related('eventregistration_set').first()
+
+        multiRegRule = getConstant('registration__multiRegNameFormRule')
+
+        self.multiReg = (
+            self.registration and
+            self.registration.eventregistration_set.count() > 1 and
+            (
+                multiRegRule == 'Y' or
+                (multiRegRule == 'O' and not self.registration.payAtDoor)
+            )
+        )
+
+        self.partnerRequired = (
+            self.registration and 
+            self.registration.eventregistration_set.filter(
+                event__partnerRequired=True
+            ).exists()
+        )
+
         # Ensure that session data is always updated when this view is called
         # so that passed voucher_ids are cleared.
         request.session.modified = True
 
-        return super(StudentInfoView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
-        context_data = super(StudentInfoView, self).get_context_data(**kwargs)
-        reg = self.temporaryRegistration
+        context_data = super().get_context_data(**kwargs)
+        reg = self.registration
 
-        initial_price = sum([x.price for x in reg.temporaryeventregistration_set.all()])
+        payAtDoor = self.request.session[REG_VALIDATION_STR].get('payAtDoor', False)
 
-        discount_codes, total_discount_amount, discounted_total = self.getDiscounts(
-            reg, initial_price
+        discount_codes, total_discount_amount = self.getDiscounts(
+            self.invoice, registration=reg
         )
-        addons = self.getAddons(reg)
+        addons = self.getAddons(self.invoice, reg)
 
-        context_data.update({
-            'reg': reg,
-            'payAtDoor': reg.payAtDoor,
-            'currencySymbol': getConstant('general__currencySymbol'),
-            'subtotal': initial_price,
-            'addonItems': addons,
-            'discount_codes': discount_codes,
-            'discount_code_amount': total_discount_amount,
-            'discounted_subtotal': discounted_total,
-        })
+        # Update totals (without saving anything), so that taxes are
+        # recalculated and the invoice handler knows how much to apply.
+        items_queryset = self.invoice.updateTotals(
+            save=False, allocateAmounts={'total': -1*total_discount_amount}
+        )
 
         # Get a voucher ID to check from the current contents of the form
         voucherId = getattr(context_data['form'].fields.get('gift'), 'initial', None)
 
         if voucherId:
-            # This will only find a customer if all three are specified.
-            customer = Customer.objects.filter(
-                first_name=reg.firstName,
-                last_name=reg.lastName,
-                email=reg.email
-            ).first()
+            context_data['voucher'] = self.getVoucher(voucherId, self.invoice)
 
-            voucher_response = check_voucher.send(
-                sender=StudentInfoView, voucherId=voucherId,
-                customer=customer, validateCustomer=(customer is not None),
-                registration=reg
+            # Recalculate taxes, but do not save the invoice
+            # with the updates, since the voucher will only be applied later.
+            if context_data['voucher'].get('beforeTax'):
+                allocateAmounts = {'total': -1*context_data['voucher'].get('voucherAmount', 0)}
+            else:
+                allocateAmounts = {'adjustments': -1*context_data['voucher'].get('voucherAmount', 0)}
+            items_queryset = self.invoice.updateTotals(
+                save=False, allocateAmounts=allocateAmounts,
+                prior_queryset=items_queryset
             )
 
-            voucher_response = [x[1] for x in voucher_response if len(x) > 1 and x[1]]
-            if (len(voucher_response) > 1):
-                # This shouldn't happen
-                logger.error('Received multiple voucher responses from signal handler.')
-            elif voucher_response:
-                if (
-                    voucher_response[0].get('status', None) == 'valid' and
-                    voucher_response[0].get('available', 0) > 0
-                ):
-                    total = max(
-                        0, discounted_total - voucher_response[0].get('available', 0)
-                    )
-                else:
-                    total = discounted_total
-
-                context_data.update({
-                    'voucher_id': voucher_response[0].get('id', None),
-                    'voucher_name': voucher_response[0].get('name', None),
-                    'voucher_amount': discounted_total - total,
-                    'discounted_subtotal': total,
-                })
-
         if (
-            reg.payAtDoor or self.request.user.is_authenticated or not
+            payAtDoor or
+            self.request.user.is_authenticated or not
             getConstant('registration__allowAjaxSignin')
         ):
             context_data['show_ajax_form'] = False
@@ -1143,16 +1815,33 @@ class StudentInfoView(RegistrationAdjustmentsMixin, FormView):
                 'signup_form': SignupForm(),
             })
 
+        context_data.update({
+            'invoice': self.invoice,
+            'currencySymbol': getConstant('general__currencySymbol'),
+            'reg': reg,
+            'payAtDoor': payAtDoor,
+            'addonItems': addons,
+            'discount_codes': discount_codes,
+            'discount_code_amount': total_discount_amount,
+            'is_multiple_registration': self.multiReg,
+        })
+
         return context_data
 
     def get_form_kwargs(self, **kwargs):
         ''' Pass along the request data to the form '''
-        kwargs = super(StudentInfoView, self).get_form_kwargs(**kwargs)
+        kwargs = super().get_form_kwargs(**kwargs)
         kwargs['request'] = self.request
-        kwargs['registration'] = self.temporaryRegistration
+        kwargs['registration'] = self.registration
+        kwargs['invoice'] = self.invoice
+        kwargs['multiReg'] = self.multiReg
         return kwargs
 
     def get_success_url(self):
+        if self.multiReg:
+            return reverse('multiRegNameInfo')
+        elif self.partnerRequired:
+            return reverse('partnerRequiredForm')
         return reverse('showRegSummary')
 
     def form_valid(self, form):
@@ -1162,30 +1851,64 @@ class StudentInfoView(RegistrationAdjustmentsMixin, FormView):
         were invalid.  Otherwise, update the session data with the form data and then
         move to the next view
         '''
-        reg = self.temporaryRegistration
 
         # The session expires after a period of inactivity that is specified in preferences.
         expiry = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
-        self.request.session[REG_VALIDATION_STR]["temporaryRegistrationExpiry"] = \
+        self.request.session[REG_VALIDATION_STR]["invoiceExpiry"] = \
             expiry.strftime('%Y-%m-%dT%H:%M:%S%z')
         self.request.session.modified = True
 
-        # Update the expiration date for this registration, and pass in the data from
-        # this form.
-        reg.expirationDate = expiry
-        reg.firstName = form.cleaned_data.pop('firstName')
-        reg.lastName = form.cleaned_data.pop('lastName')
-        reg.email = form.cleaned_data.pop('email')
-        reg.phone = form.cleaned_data.pop('phone', None)
-        reg.student = form.cleaned_data.pop('student', False)
-        reg.comments = form.cleaned_data.pop('comments', None)
-        reg.howHeardAboutUs = form.cleaned_data.pop('howHeardAboutUs', None)
+        # Notice that student and phone are not popped so that they go into the
+        # Invoice data.
+        firstName = form.cleaned_data.pop('firstName')
+        lastName = form.cleaned_data.pop('lastName')
+        email = form.cleaned_data.pop('email')
+        phone = form.cleaned_data.get('phone', None)
+        student = form.cleaned_data.get('student', False)
 
-        # Anything else in the form goes to the TemporaryRegistration data.
-        reg.data.update(form.cleaned_data)
-        reg.save()
+        reg = self.registration
+        if reg:
 
-        # This signal (formerly the post_temporary_registration signal) allows
-        # vouchers to be applied temporarily, and it can be used for other tasks
-        post_student_info.send(sender=StudentInfoView, registration=reg)
+            # Update the expiration date for this registration, and pass in the data from
+            # this form.
+            reg.comments = form.cleaned_data.pop('comments', None)
+            reg.howHeardAboutUs = form.cleaned_data.pop('howHeardAboutUs', None)
+
+            if not self.multiReg:
+                customer, created = Customer.objects.update_or_create(
+                    first_name=firstName, last_name=lastName,
+                    email=email, defaults={'phone': phone}
+                )
+                reg.eventregistration_set.update(
+                    customer=customer, student=student
+                )
+
+            invoice = reg.link_invoice(
+                expirationDate=expiry, firstName=firstName, lastName=lastName,
+                email=email, save=False
+            )
+
+            # Anything else in the form goes to the Invoice data.
+            invoice.data.update(form.cleaned_data)
+            invoice.save()
+            reg.save()
+        else:
+            invoice = self.invoice
+
+            if invoice.status == Invoice.PaymentStatus.preliminary:
+                invoice.expirationDate = expiry
+
+            invoice.firstName = firstName
+            invoice.lastName = lastName
+            invoice.email = email
+            invoice.data.update(form.cleaned_data)
+            invoice.save()
+
+        # This signal allows vouchers to be applied temporarily, and it can
+        # be used for other tasks.  We only send it here if we are not collecting
+        # additional name information in the next step.
+        if not self.multiReg:
+            post_student_info.send(
+                sender=StudentInfoView, invoice=invoice, registration=reg
+            )
         return HttpResponseRedirect(self.get_success_url())  # Redirect after POST

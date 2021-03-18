@@ -1,0 +1,81 @@
+{% load sekizai_tags i18n crispy_forms_tags %}
+
+<div class="col-12 my-1 event-register-set {{instance.cssClasses}}">
+    {% if instance.title and register_choices %}<h4 class="event-register-set-title">{{ instance.title }}</h4>{% endif %}
+    {% for key,item in register_choices.items %}
+        <div class="card">
+            <div class="card-body item">
+                {% block cart_title %}<h5 class="cart-title">{{ item.event.name }}</h5>{% endblock %}
+
+                <div class="btn-group">
+                {% for choice in item.primary_options %}
+                    <button class="btn btn-outline-primary my-2 mx-2 add-item"
+                        id="{{ choice.choiceId }}"
+                        data-choice-id="{{ choice.choiceId }}"
+                        data-type="eventRegistration"
+                        data-event="{{ item.event.id }}" data-name="{{ item.event.name }}" 
+                        data-price="{{ choice.price }}"
+                        data-role-id="{{ choice.roleId|default_if_none:'' }}"
+                        data-role-name="{{ choice.roleName|default_if_none:'' }}"
+                        data-require-full="{{ choice.requireFullRegistration }}"
+                        data-check-in-type="{{ instance.autoCheckIn }}"
+                        {% if choice.voucherId %}data-voucher-id="{{ choice.voucherId }}"{% endif %}
+                        {% if choice.dropIn %}
+                            data-drop-in="{{ choice.dropIn }}"
+                            data-drop-in-occurrence="{{ choice.dropInOccurrence }}"
+                        {% endif %}
+                        {% if choice.student %}data-student="{{ choice.student }}"{% endif %}
+                        {% if choice.paymentMethod %}
+                            data-payment-method="{{ choice.paymentMethod }}"
+                            data-auto-submit="{{ choice.autoSubmit }}"
+                        {% endif %}
+                        {% if choice.checkInOccurrence %}
+                            data-check-in-occurrence="{{ choice.checkInOccurrence }}"
+                        {% endif %}
+                        {% if choice.data %}data-data="{{ choice.data }}"{% endif %}
+                    >
+                        {{ choice.label }} <span class="badge badge-pill badge-primary badge-choice-counter"></span>
+                    </button>
+                {% endfor %}
+                </div>
+                {% if item.additional_options %}
+                    <div class="btn-group pull-right">
+                    <button class="btn btn-outline-secondary dropdown-toggle my-2" type="button" data-toggle="dropdown" id="additionalChoices_{{ item.event.id }}" aria-haspopup="true" aria-expanded="false">
+                            {% trans "Additional Options" %}
+                        </button>
+                        <div class="dropdown-menu" aria-labelledby="additionalChoices_{{ item.event.id }}">
+                            {% for choice in item.additional_options %}
+                                <a href="#" class="dropdown-item add add-item"
+                                    data-choice-id="{{ choice.choiceId }}"
+                                    data-type="eventRegistration"
+                                    data-event="{{ item.event.id }}" data-description="{{ item.event.name }}"
+                                    data-price="{{ choice.price }}"
+                                    data-role-id="{{ choice.roleId|default_if_none:'' }}"
+                                    data-role-name="{{ choice.roleName|default_if_none:'' }}"
+                                    data-require-full="{{ choice.requireFullRegistration }}"
+                                    data-check-in-type="{{ instance.autoCheckIn }}"
+                                    {% if choice.voucherId %}data-voucher-id="{{ choice.voucherId }}"{% endif %}
+                                    {% if choice.dropIn %}
+                                        data-drop-in="{{ choice.dropIn }}"
+                                        data-drop-in-occurrence="{{ choice.dropInOccurrence }}"
+                                        {% endif %}
+                                    {% if choice.student %}data-student="{{ choice.student }}"{% endif %}
+                                    {% if choice.paymentMethod %}
+                                        data-payment-method="{{ choice.paymentMethod }}"
+                                        data-auto-submit="{{ choice.autoSubmit }}"
+                                    {% endif %}
+                                    {% if choice.checkInOccurrence %}
+                                        data-check-in-occurrence="{{ choice.checkInOccurrence }}"
+                                    {% endif %}
+                                    {% if choice.data %}data-data="{{ choice.data }}"{% endif %}
+                                >
+                                    {{ choice.label }} <span class="badge badge-pill badge-primary badge-choice-counter"></span>
+                                </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    {% endfor %}
+</div>

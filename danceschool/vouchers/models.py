@@ -1,15 +1,16 @@
 from django.db import models
+from django.db.models import Sum
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, RegexValidator
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 import random
 import string
 
 from danceschool.core.models import (
-    CustomerGroup, Customer, Registration, TemporaryRegistration,
+    CustomerGroup, Customer, Invoice,
     ClassDescription, DanceTypeLevel, SeriesCategory, PublicEventCategory,
-    EventSession
+    EventSession, Event
 )
 
 
@@ -76,6 +77,15 @@ class Voucher(models.Model):
             '  If unspecified, there is no limit.  Be sure to specify this for' +
             ' publicly advertised voucher codes.'
         )
+    )
+
+    beforeTax = models.BooleanField(
+        _('Voucher applied before tax'), default=True,
+        help_text=_(
+            'Voucher codes that are used as discounts or promotions are ' +
+            'usually subtracted from the total price before any applicable ' +
+            'sales tax is calculated, while gift certificates are subtracted ' +
+            'from the after-tax total price.')
     )
 
     # i.e. For Groupon and LivingSocial, these are single use
@@ -150,18 +160,13 @@ class Voucher(models.Model):
     isValidForAnyClass.fget.short_description = _('Voucher is valid for any class')
 
     def getAmountLeft(self):
-        amount = self.originalAmount - self.refundAmount
-        uses = VoucherUse.objects.filter(voucher=self)
-        for use in uses:
-            amount -= use.amount
-
-        credits = VoucherCredit.objects.filter(voucher=self)
-
-        for credit in credits:
-            amount += credit.amount
-
-        return amount
-
+        return (
+            (self.originalAmount or 0) - (self.refundAmount or 0) -
+            (self.voucheruse_set.filter(applied=True).aggregate(
+                sum=Sum('amount')
+            ).get('sum') or 0) +
+            (self.vouchercredit_set.aggregate(sum=Sum('amount')).get('sum') or 0)
+        )
     amountLeft = property(fget=getAmountLeft)
     amountLeft.fget.short_description = _('Amount remaining')
 
@@ -175,7 +180,7 @@ class Voucher(models.Model):
     maxToUse.fget.short_description = _('Maximum amount available for next use')
 
     def validate(
-        self, customer=None, event_list=[], payAtDoor=False, raise_errors=True,
+        self, customer=None, events=None, payAtDoor=False, raise_errors=True,
         return_amount=False, validate_customer=True, validate_events=True
     ):
         '''
@@ -195,7 +200,10 @@ class Voucher(models.Model):
         errors = []
         warnings = []
 
-        if not hasattr(event_list, '__iter__'):
+        if events is None:
+            events = Event.objects.none()
+
+        if not hasattr(events, '__iter__'):
             raise ValueError(_('Invalid event list.'))
         if (type(customer) not in [Customer, type(None)]):
             raise ValueError(_('Invalid customer.'))
@@ -221,7 +229,7 @@ class Voucher(models.Model):
             )
 
         # not used (for single-use vouchers)
-        if self.singleUse and self.voucheruse_set.count() > 0:
+        if self.singleUse and self.voucheruse_set.filter(applied=True).count() > 0:
             errors.append(
                 ValidationError(
                     _('This single-use voucher has already been used.'),
@@ -242,11 +250,11 @@ class Voucher(models.Model):
         if errors and raise_errors:
             raise ValidationError(errors)
 
-        # Only validate event_list contents if specified (default is True)
+        # Only validate events contents if specified (default is True)
         if validate_events:
             # every series is either in the list or there is no list
             if self.classvoucher_set.exists():
-                for s in event_list:
+                for s in events:
                     if not self.classvoucher_set.filter(
                         classDescription=s.classDescription
                     ).exists():
@@ -257,7 +265,7 @@ class Voucher(models.Model):
                             )
                         )
             if self.dancetypevoucher_set.exists():
-                for s in event_list:
+                for s in events:
                     if not self.dancetypevoucher_set.filter(
                         danceTypeLevel=s.classDescription.danceTypeLevel
                     ).exists():
@@ -268,7 +276,7 @@ class Voucher(models.Model):
                             )
                         )
             if self.seriescategoryvoucher_set.exists():
-                for s in event_list:
+                for s in events:
                     if not self.seriescategoryvoucher_set.filter(seriesCategory=s.category).exists():
                         errors.append(
                             ValidationError(
@@ -277,7 +285,7 @@ class Voucher(models.Model):
                             )
                         )
             if self.publiceventcategoryvoucher_set.exists():
-                for s in event_list:
+                for s in events:
                     if not self.publiceventcategoryvoucher_set.filter(
                         publicEventCategory=s.category
                     ).exists():
@@ -288,7 +296,7 @@ class Voucher(models.Model):
                             )
                         )
             if self.sessionvoucher_set.exists():
-                for s in event_list:
+                for s in events:
                     if not self.sessionvoucher_set.filter(session=s.session).exists():
                         errors.append(
                             ValidationError(
@@ -308,7 +316,7 @@ class Voucher(models.Model):
                 'message': _('This voucher can be only used for specific classes or events.')
             })
 
-        # Only validate event_list contents if specified (default is True)
+        # Only validate events contents if specified (default is True)
         if validate_customer:
             # customer is either in the list or there is no list
             if not self.isValidForAnyCustomer:
@@ -374,6 +382,7 @@ class Voucher(models.Model):
             'name': self.name,
             'id': self.voucherId,
             'status': 'valid',
+            'beforeTax': self.beforeTax,
             'warnings': warnings,
         }
 
@@ -421,13 +430,18 @@ class VoucherUse(models.Model):
     voucher = models.ForeignKey(
         Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE,
     )
-    registration = models.ForeignKey(
-        Registration, null=True, verbose_name=_('Registration'),
-        on_delete=models.SET_NULL,
+    invoice = models.ForeignKey(
+        Invoice, verbose_name=_('Invoice'), on_delete=models.CASCADE,
     )
     amount = models.FloatField(_('Amount'), validators=[MinValueValidator(0)])
+
+    beforeTax = models.BooleanField(
+        _('Voucher applied before tax'), default=True,
+    )
+
     notes = models.CharField(_('Notes'), max_length=100, null=True, blank=True)
     creationDate = models.DateTimeField(_('Date of use'), auto_now_add=True, null=True)
+    applied = models.BooleanField(_('Use finalized'), default=False)
 
     class Meta:
         verbose_name = _('Voucher use')
@@ -538,21 +552,6 @@ class VoucherCredit(models.Model):
     class Meta:
         verbose_name = _('Voucher credit')
         verbose_name_plural = _('Voucher credits')
-
-
-class TemporaryVoucherUse(models.Model):
-    registration = models.ForeignKey(
-        TemporaryRegistration, verbose_name=_('Registration'), on_delete=models.CASCADE
-    )
-    voucher = models.ForeignKey(
-        Voucher, verbose_name=_('Voucher'), on_delete=models.CASCADE
-    )
-    amount = models.FloatField(_('Amount'), validators=[MinValueValidator(0)])
-    creationDate = models.DateTimeField(_('Date of use'), auto_now_add=True, null=True)
-
-    class Meta:
-        verbose_name = _('Tentative voucher use')
-        verbose_name_plural = _('Tentative voucher uses')
 
 
 class VoucherReferralDiscountUse(models.Model):

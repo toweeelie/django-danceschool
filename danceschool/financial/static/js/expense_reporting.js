@@ -1,5 +1,5 @@
-(function($) {
-$(document).ready(function(){
+document.addEventListener("DOMContentLoaded", function(event) {
+
 	$('#div_id_total').show();
 	$('#div_id_hours').hide();
 
@@ -28,4 +28,3 @@ $(document).ready(function(){
 	});
 
 });
-})(django.jQuery);

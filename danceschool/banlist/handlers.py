@@ -8,8 +8,7 @@ from django.dispatch import receiver
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.utils import timezone
-from django.utils.translation import ugettext
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, gettext
 from django.db.models import Q
 
 # Local Application Specific Imports
@@ -17,6 +16,7 @@ from danceschool.banlist.models import BannedPerson, BanFlaggedRecord
 from danceschool.core.signals import check_student_info
 from danceschool.core.constants import getConstant, REG_VALIDATION_STR
 from danceschool.core.tasks import sendEmail
+from danceschool.core.models import Registration
 
 # Define logger for this file
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def checkBanlist(sender, **kwargs):
 
     logger.debug('Signal to check RegistrationContactForm handled by banlist app.')
 
-    formData = kwargs.get('formData', {})
+    formData = kwargs.get('data', {})
     first = formData.get('firstName')
     last = formData.get('lastName')
     email = formData.get('email')
@@ -50,6 +50,13 @@ def checkBanlist(sender, **kwargs):
     request = kwargs.get('request', {})
     session = getattr(request, 'session', {}).get(REG_VALIDATION_STR, {})
     registrationId = getattr(kwargs.get('registration', None), 'id', None)
+    invoice = kwargs.get('invoice', None)
+    invoiceId = str(getattr(invoice, 'id', ''))
+
+    if not registrationId and invoice:
+        registrationId = getattr(
+            Registration.objects.filter(invoice=invoice).first(), 'id', None
+        )
 
     records = BannedPerson.objects.exclude(
         disabled=True
@@ -74,7 +81,10 @@ def checkBanlist(sender, **kwargs):
             flagCode=flagCode,
             person=record,
             ipAddress=ip,
-            data={'session': session, 'formData': formData, 'registrationId': registrationId}
+            data={
+                'session': session, 'formData': formData,
+                'registrationId': registrationId, 'invoiceId': invoiceId,
+            }
         )
 
     notify = getConstant('registration__banListNotificationEmail')
@@ -94,7 +104,7 @@ def checkBanlist(sender, **kwargs):
 
         sendEmail(subject, message, send_from, to=[notify])
 
-    message = ugettext('There appears to be an issue with this registration. '
+    message = gettext('There appears to be an issue with this registration. '
                        'Please contact %s to proceed with the registration process. '
                        'You may reference the error code %s.' % (respondTo, flagCode))
 

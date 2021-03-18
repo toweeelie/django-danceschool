@@ -1,14 +1,12 @@
 from django.db import models
 from django.core.validators import MinValueValidator
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from djchoices import DjangoChoices, ChoiceItem
 from calendar import day_name
 from collections import namedtuple
 
 from danceschool.core.models import (
-    PricingTier, DanceTypeLevel, Registration, TemporaryRegistration,
-    Customer, CustomerGroup
+    PricingTier, DanceTypeLevel, Registration, Customer, CustomerGroup
 )
 
 
@@ -84,11 +82,11 @@ class DiscountCategory(models.Model):
 class DiscountCombo(models.Model):
 
     # Choices of Discount Types
-    class DiscountType(DjangoChoices):
-        flatPrice = ChoiceItem('F', _('Exact Specified Price'))
-        dollarDiscount = ChoiceItem('D', _('Dollar Discount from Regular Price'))
-        percentDiscount = ChoiceItem('P', _('Percentage Discount from Regular Price'))
-        addOn = ChoiceItem('A', _('Free Add-on Item (Can be combined with other discounts)'))
+    class DiscountType(models.TextChoices):
+        flatPrice = ('F', _('Exact Specified Price'))
+        dollarDiscount = ('D', _('Dollar Discount from Regular Price'))
+        percentDiscount = ('P', _('Percentage Discount from Regular Price'))
+        addOn = ('A', _('Free Add-on Item (Can be combined with other discounts)'))
 
     # An applied discount may not apply to all items in a customer's
     # cart, so an instance of this class keeps track of the code
@@ -154,7 +152,7 @@ class DiscountCombo(models.Model):
             'Leave blank for no restriction.'
         ),
     )
-    firstXRegistered = models.PositiveSmallIntegerField(
+    firstXRegistered = models.SmallIntegerField(
         _('Only for first __ registrants'),
         null=True, blank=True,
         help_text=_(
@@ -162,6 +160,16 @@ class DiscountCombo(models.Model):
             'than this many individuals registered (including registrations in progress). '
             'Only one discount per category can be applied, so if you define tiered discounts '
             'in the same category, only the best available discount will be used.'
+        ),
+        validators=[MinValueValidator(1),]
+    )
+    customerMatchRequired = models.BooleanField(
+        _('Registration names must match invoice'), default=False,
+        help_text=_(
+            'If checked, then this discount will only be applied once the '
+            'name associated with each registration on the invoice can be '
+            'verified, and only if the subset of registrations with the same '
+            'name can qualify for the discount.'
         )
     )
 
@@ -230,7 +238,8 @@ class DiscountCombo(models.Model):
             this_price = applicable_price \
                 + sum([
                     x[0].event.getBasePrice(payAtDoor=payAtDoor) * x[1] if
-                    x[1] != 1 else x[0].price for x in tieredTuples
+                    x[1] != 1 else x[0].event.getBasePrice(payAtDoor=payAtDoor)
+                    for x in tieredTuples
                 ])
 
             # Flat prices are allocated equally across all events
@@ -276,7 +285,7 @@ class DiscountCombo(models.Model):
         Rather than embedding logic re: door pricing,
         other code can call this method.
         '''
-        if self.discountType is not DiscountCombo.DiscountType.flatPrice:
+        if self.discountType != DiscountCombo.DiscountType.flatPrice:
             return None
         if payAtDoor:
             return self.doorPrice
@@ -317,7 +326,7 @@ class DiscountCombo(models.Model):
             self.percentDiscount = None
             self.percentUniversallyApplied = False
 
-        super(DiscountCombo, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -364,22 +373,6 @@ class DiscountComboComponent(models.Model):
         verbose_name_plural = _('Required components of discount')
 
 
-class TemporaryRegistrationDiscount(models.Model):
-    registration = models.ForeignKey(
-        TemporaryRegistration, verbose_name=_('Temporary registration'),
-        on_delete=models.CASCADE,
-    )
-    discount = models.ForeignKey(
-        DiscountCombo, verbose_name=_('Discount'), on_delete=models.CASCADE
-    )
-    discountAmount = models.FloatField(verbose_name=_('Amount of discount'), validators=[MinValueValidator(0)])
-
-    class Meta:
-        unique_together = ('registration', 'discount')
-        verbose_name = _('Discount applied to temporary registration')
-        verbose_name_plural = _('Discounts applied to temporary registrations')
-
-
 class RegistrationDiscount(models.Model):
     registration = models.ForeignKey(
         Registration, verbose_name=_('Registration'), on_delete=models.CASCADE
@@ -389,6 +382,7 @@ class RegistrationDiscount(models.Model):
         on_delete=models.CASCADE,
     )
     discountAmount = models.FloatField(verbose_name=_('Amount of discount'), validators=[MinValueValidator(0)])
+    applied = models.BooleanField(_('Use finalized'), default=False)
 
     class Meta:
         unique_together = ('registration', 'discount')

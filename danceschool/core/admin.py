@@ -1,12 +1,13 @@
 from django.contrib import admin
 from django.contrib.admin.widgets import RelatedFieldWidgetWrapper
+from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.forms import (
     ModelForm, SplitDateTimeField, HiddenInput, RadioSelect,
-    ModelMultipleChoiceField, ModelChoiceField
+    ModelMultipleChoiceField, ModelChoiceField, ChoiceField
 )
 from django.utils.safestring import mark_safe
 from django.urls import reverse
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _
 from django.template.response import SimpleTemplateResponse
 from django.contrib.contenttypes.models import ContentType
 from django.http import HttpResponseRedirect
@@ -24,22 +25,22 @@ from dal import autocomplete
 from .models import (
     EventSession, Event, PublicEventCategory, Series, SeriesCategory,
     PublicEvent, EventOccurrence, SeriesTeacher, StaffMember, Instructor,
-    SubstituteTeacher, Registration, TemporaryRegistration, EventRegistration,
-    TemporaryEventRegistration, ClassDescription, CustomerGroup, Customer,
-    Location, PricingTier, DanceRole, DanceType, DanceTypeLevel, EmailTemplate,
-    EventStaffMember, SeriesStaffMember, EventStaffCategory, EventRole,
-    Invoice, InvoiceItem, Room
+    SubstituteTeacher, Registration, EventRegistration, ClassDescription,
+    CustomerGroup, Customer, Location, PricingTier, DanceRole, DanceType,
+    DanceTypeLevel, EmailTemplate, EventStaffMember, SeriesStaffMember,
+    EventStaffCategory, EventRole, Invoice, InvoiceItem, Room
 )
 from .constants import getConstant
 from .forms import LocationWithDataWidget
 from parler.admin import TranslatableAdmin
+from .mixins import ModelTemplateMixin
 
 ######################################
 # Admin action for repeating events
 
 
 def repeat_events(modeladmin, request, queryset):
-    selected = request.POST.getlist(admin.ACTION_CHECKBOX_NAME)
+    selected = request.POST.getlist(ACTION_CHECKBOX_NAME)
     ct = ContentType.objects.get_for_model(queryset.model)
     return HttpResponseRedirect(reverse('repeatEvents') + "?ct=%s&ids=%s" % (ct.pk, ", ".join(selected)))
 
@@ -81,14 +82,14 @@ class EventStaffMemberInlineForm(ModelForm):
     class Media:
         js = (
             'admin/js/vendor/jquery/jquery.min.js',
-            'autocomplete_light/jquery.init.js',
+            'admin/js/jquery.init.js',
         )
 
 
 class SeriesTeacherInlineForm(ModelForm):
 
     def __init__(self, *args, **kwargs):
-        super(SeriesTeacherInlineForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.fields['staffMember'].label = _('Instructor')
         self.fields['category'].initial = getConstant('general__eventStaffCategoryInstructor').id
@@ -134,7 +135,7 @@ class SeriesTeacherInline(admin.StackedInline):
 class SubstituteTeacherInlineForm(ModelForm):
 
     def __init__(self, *args, **kwargs):
-        super(SubstituteTeacherInlineForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.fields['staffMember'].label = _('Instructor')
         self.fields['replacedStaffMember'].required = True
@@ -169,7 +170,7 @@ class SubstituteTeacherInline(admin.StackedInline):
     extra = 0
 
     def formfield_for_foreignkey(self, db_field, request=None, **kwargs):
-        field = super(SubstituteTeacherInline, self).formfield_for_foreignkey(db_field, request, **kwargs)
+        field = super().formfield_for_foreignkey(db_field, request, **kwargs)
 
         if db_field.name == 'replacedStaffMember':
             if request._obj_ is not None:
@@ -180,7 +181,7 @@ class SubstituteTeacherInline(admin.StackedInline):
         return field
 
     def formfield_for_manytomany(self, db_field, request=None, **kwargs):
-        field = super(SubstituteTeacherInline, self).formfield_for_foreignkey(db_field, request, **kwargs)
+        field = super().formfield_for_foreignkey(db_field, request, **kwargs)
 
         if db_field.name == 'occurrences':
             if request._obj_ is not None:
@@ -203,7 +204,7 @@ class EventStaffMemberInline(admin.TabularInline):
     form = EventStaffMemberInlineForm
 
     def formfield_for_manytomany(self, db_field, request=None, **kwargs):
-        field = super(EventStaffMemberInline, self).formfield_for_foreignkey(db_field, request, **kwargs)
+        field = super().formfield_for_foreignkey(db_field, request, **kwargs)
 
         if db_field.name == 'occurrences':
             if request._obj_ is not None:
@@ -226,16 +227,61 @@ class SeriesStaffMemberInline(EventStaffMemberInline):
 class EventRegistrationInline(admin.StackedInline):
     model = EventRegistration
     extra = 0
-    fields = ['event', 'role', 'cancelled', 'dropIn', 'price', 'netPrice']
-    readonly_fields = ['event', 'price', 'netPrice', 'dropIn']
+    fields = [
+        'customer', 'event', 'role', 'cancelled', 'dropIn', 'occurrences',
+        'item_grossTotal', 'item_total', 'partner_name'
+    ]
+    add_readonly_fields = ['item_grossTotal', 'item_total', 'partner_name']
+    readonly_fields = ['customer', 'event', 'item_grossTotal', 'item_total', 'dropIn', 'occurrences', 'partner_name']
+    autocomplete_fields = ['customer', ]
 
-    # These ensure that registration changes happen through the regular registration
-    # process.
     def has_add_permission(self, request, obj=None):
-        return False
+        '''
+        EventRegistrations can only be added to Registrations that are not final.
+        '''
+        if obj and obj.final:
+            return False
+        return True
 
     def has_delete_permission(self, request, obj=None):
-        return False
+        '''
+        EventRegistrations can only be deleted from Registrations that are not
+        final.
+        '''
+        if obj and obj.final:
+            return False
+        return True
+
+    def get_readonly_fields(self, request, obj=None):
+        if not obj:
+            return self.add_readonly_fields
+        return self.readonly_fields
+
+    def item_grossTotal(self, obj):
+        return getattr(obj.invoiceItem, 'grossTotal', None)
+    item_grossTotal.short_description = _('Total before discounts')
+
+    def item_total(self, obj):
+        return getattr(obj.invoiceItem, 'total', None)
+    item_total.short_description = _('Total billed amount')
+
+    def partner_name(self, obj):
+        if obj.event.partnerRequired and obj.data.get('partner', {}):
+            name = ' '.join([
+                obj.data['partner'].get('firstName',''),
+                obj.data['partner'].get('lastName',''),
+            ])
+            customerId = obj.data['partner'].get('customerId')
+
+            if customerId:
+                change_url = reverse('admin:core_customer_change', args=(customerId, ))
+                return mark_safe(
+                    '<a href="%s">%s</a>' % (change_url, name or _('N/A'))
+                )
+            return name or _('N/A')
+        return _('N/A')
+
+    partner_name.short_description = _('Partner')
 
 
 class EventOccurrenceInlineForm(ModelForm):
@@ -252,16 +298,15 @@ class EventOccurrenceInline(admin.TabularInline):
 
     class Media:
         js = (
-            'admin/js/vendor/jquery/jquery.min.js',
-            'jquery-ui/jquery-ui.min.js',
             'moment/moment.min.js',
+            'bootstrap-datepicker/js/bootstrap-datepicker.min.js',
+            'timepicker/jquery.timepicker.min.js',
             'datepair/datepair.min.js',
             'datepair/jquery.datepair.min.js',
-            'timepicker/jquery.timepicker.min.js',
             'js/eventadmin_pickers.js'
         )
         css = {
-            'all': ('timepicker/jquery.timepicker.css', 'jquery-ui/jquery-ui.min.css', )
+            'all': ('timepicker/jquery.timepicker.css', 'bootstrap-datepicker/css/bootstrap-datepicker.standalone.min.css')
         }
 
 
@@ -269,37 +314,80 @@ class EventOccurrenceInline(admin.TabularInline):
 # Registration related admin classes
 
 
+class InvoiceAdminForm(ModelForm):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Invoices that are already in a finalized type of status cannot be
+        # changed to a non-finalized type of status.  This is enforced at the
+        # model level; this code just limits the dropdown choices.
+        instance = kwargs.get('instance', None)
+
+        if getattr(instance, 'status', None) in [
+            Invoice.PaymentStatus.paid, Invoice.PaymentStatus.needsCollection,
+            Invoice.PaymentStatus.fullRefund,
+        ]:
+            limited_choices = [
+                x for x in Invoice.PaymentStatus.choices if x[0] in [
+                    Invoice.PaymentStatus.paid,
+                    Invoice.PaymentStatus.needsCollection,
+                    Invoice.PaymentStatus.fullRefund
+                ]
+            ]
+            self.fields['status'] = ChoiceField(
+                choices=limited_choices, required=True,
+            )
+
+    class Meta:
+        model = Invoice
+        exclude = []
+
+
 class InvoiceItemInline(admin.StackedInline):
     model = InvoiceItem
     extra = 0
-    add_fields = [('description', 'grossTotal', 'total', 'taxes', 'fees', 'adjustments'), ]
-    fields = ['id', ('description', 'grossTotal', 'total', 'taxes', 'fees', 'adjustments'), ]
+    add_fields = [('description', 'grossTotal', 'total', 'taxRate', 'taxes', 'fees', 'adjustments'), ]
+    fields = ['id', ('description', 'grossTotal', 'total', 'taxRate', 'taxes', 'fees', 'adjustments'), ]
     add_readonly_fields = ['fees', ]
-    readonly_fields = ['id', 'grossTotal', 'total', 'taxes', 'fees']
+    readonly_fields = ['id', 'grossTotal', 'total', 'taxRate', 'taxes', 'fees']
 
-    # This ensures that InvoiceItems are not deleted except through
-    # the regular registration process.  Invoice items can still be
-    # manually added.
+    def has_add_permission(self, request, obj=None):
+        '''
+        InvoiceItems can only be added when an invoice's status is preliminary
+        or unpaid.
+        '''
+        if obj and not obj.itemsEditable:
+            return False
+        return True
+
     def has_delete_permission(self, request, obj=None):
-        return False
+        '''
+        InvoiceItems can only be deleted when an invoice's status is preliminary
+        or unpaid.
+        '''
+        if obj and not obj.itemsEditable:
+            return False
+        return True
 
     def get_readonly_fields(self, request, obj=None):
-        if not obj:
+        if not obj or getattr(obj, 'itemsEditable', False):
             return self.add_readonly_fields
         return self.readonly_fields
 
     def get_fields(self, request, obj=None):
-        if not obj:
+        if not obj or getattr(obj, 'itemsEditable', False):
             return self.add_fields
-        return super(InvoiceItemInline, self).get_fields(request, obj)
+        return super().get_fields(request, obj)
 
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
+    form = InvoiceAdminForm
     inlines = [InvoiceItemInline, ]
     list_display = [
-        'id', 'recipientInfo', 'status', 'total', 'netRevenue',
-        'outstandingBalance', 'creationDate', 'modifiedDate', 'links'
+        'id', 'recipientInfo', 'status', 'outstandingBalance',
+        'modifiedDate', 'links'
     ]
     list_filter = ['status', 'paidOnline', 'creationDate', 'modifiedDate']
     search_fields = ['id', 'comments']
@@ -310,97 +398,6 @@ class InvoiceAdmin(admin.ModelAdmin):
         'links', 'submissionUser', 'collectedByUser'
     ]
     view_on_site = True
-
-    def emailNotification(self, request, queryset):
-        # Allows use of the email view to contact specific customers.
-        selected = request.POST.getlist(admin.ACTION_CHECKBOX_NAME)
-        return HttpResponseRedirect(
-            reverse('sendInvoiceNotifications') +
-            "?invoices=%s" % (", ".join(selected))
-        )
-    emailNotification.short_description = _('Send email notifications for selected invoices')
-
-    actions = ['emailNotification', ]
-
-    def recipientInfo(self, obj):
-        if obj.firstName and obj.lastName and obj.email:
-            return '%s %s: %s' % (obj.firstName, obj.lastName, obj.email)
-        elif obj.email:
-            return obj.email
-    recipientInfo.short_description = _('Recipient')
-
-    def viewInvoiceLink(self, obj):
-        if obj.id:
-            change_url = reverse('viewInvoice', args=(obj.id, ))
-            return mark_safe(
-                '<a class="btn btn-outline-secondary" href="%s">View Invoice</a>' % (change_url, )
-            )
-    viewInvoiceLink.allow_tags = True
-    viewInvoiceLink.short_description = _('Invoice')
-
-    def notificationLink(self, obj):
-        if obj.id:
-            change_url = reverse('sendInvoiceNotifications', args=(obj.id, ))
-            return mark_safe(
-                '<a class="btn btn-outline-secondary" href="%s">Notify Recipient</a>' % (change_url, )
-            )
-    notificationLink.allow_tags = True
-    notificationLink.short_description = _('Invoice notification')
-
-    def finalRegistrationLink(self, obj):
-        if obj.finalRegistration:
-            change_url = reverse('admin:core_registration_change', args=(obj.finalRegistration.id, ))
-            return mark_safe(
-                '<a class="btn btn-outline-secondary" href="%s">Registration</a>' % (change_url, )
-            )
-    finalRegistrationLink.allow_tags = True
-    finalRegistrationLink.short_description = _('Final registration')
-
-    def temporaryRegistrationLink(self, obj):
-        if obj.temporaryRegistration:
-            change_url = reverse(
-                'admin:core_temporaryregistration_change',
-                args=(obj.temporaryRegistration.id, )
-            )
-            return mark_safe(
-                '<a class="btn btn-outline-secondary" href="%s">Temporary Registration</a>' % (
-                    change_url,
-                )
-            )
-    temporaryRegistrationLink.allow_tags = True
-    temporaryRegistrationLink.short_description = _('Temporary registration')
-
-    def links(self, obj):
-        return mark_safe(''.join([
-            self.viewInvoiceLink(obj) or '',
-            self.notificationLink(obj) or '',
-            self.temporaryRegistrationLink(obj) or '',
-            self.finalRegistrationLink(obj) or '',
-        ]))
-    links.allow_tags = True
-    links.short_description = _('Links')
-
-    def save_model(self, request, obj, form, change):
-        if not change:
-            obj.submissionUser = request.user
-        super(InvoiceAdmin, self).save_model(request, obj, form, change)
-
-    def save_related(self, request, form, formsets, change):
-        '''
-        Update the Invoice object after saving so that the invoice lines
-        match the invoice item lines.
-        '''
-        super(InvoiceAdmin, self).save_related(request, form, formsets, change)
-        invoice = form.instance
-        for attr in ['grossTotal', 'total', 'adjustments', 'taxes', 'fees']:
-            setattr(invoice, attr, sum([getattr(x, attr) for x in invoice.invoiceitem_set.all()]))
-        invoice.save()
-
-    def get_fieldsets(self, request, obj=None):
-        if not obj:
-            return self.add_fieldsets
-        else:
-            return super(InvoiceAdmin, self).get_fieldsets(request, obj)
 
     fieldsets = (
         (None, {
@@ -436,127 +433,205 @@ class InvoiceAdmin(admin.ModelAdmin):
         }),
     )
 
+    def emailNotification(self, request, queryset):
+        # Allows use of the email view to contact specific customers.
+        selected = request.POST.getlist(ACTION_CHECKBOX_NAME)
+        return HttpResponseRedirect(
+            reverse('sendInvoiceNotifications') +
+            "?invoices=%s" % (", ".join(selected))
+        )
+    emailNotification.short_description = _('Send email notifications for selected invoices')
+
+    actions = ['emailNotification', ]
+
+    def recipientInfo(self, obj):
+        if obj.firstName and obj.lastName and obj.email:
+            return '%s %s: %s' % (obj.firstName, obj.lastName, obj.email)
+        elif obj.email:
+            return obj.email
+    recipientInfo.short_description = _('Recipient')
+
+    def viewInvoiceLink(self, obj):
+        if obj.id:
+            change_url = reverse('viewInvoice', args=(obj.id, ))
+            return mark_safe(
+                '<a href="%s">%s</a>' % (change_url, gettext('View'))
+            )
+    viewInvoiceLink.allow_tags = True
+    viewInvoiceLink.short_description = _('Invoice')
+
+    def notificationLink(self, obj):
+        if obj.id:
+            change_url = reverse('sendInvoiceNotifications', args=(obj.id, ))
+            return mark_safe(
+                '<a href="%s">%s</a>' % (change_url, gettext('Notify'))
+            )
+    notificationLink.allow_tags = True
+    notificationLink.short_description = _('Invoice notification')
+
+    def registrationLink(self, obj):
+        if getattr(obj, 'registration', None):
+            change_url = reverse('admin:core_registration_change', args=(obj.registration.id, ))
+            return mark_safe(
+                '<a href="%s">%s</a>' % (change_url, gettext('Registration'))
+            )
+    registrationLink.allow_tags = True
+    registrationLink.short_description = _('Registration')
+
+    def refundLink(self, obj):
+        change_url = reverse('refundProcessing', args=(obj.id, ))
+        return mark_safe(
+            '<a href="%s">%s</a>' % (change_url, gettext('Refund'))
+        )
+    refundLink.allow_tags = True
+    refundLink.short_description = _('Refund')
+
+    def links(self, obj):
+        button_start = ''
+        button_end = ''
+
+        return mark_safe(
+            button_start + '<br />'.join([
+                self.viewInvoiceLink(obj) or '',
+                self.notificationLink(obj) or '',
+                self.refundLink(obj) or '',
+                self.registrationLink(obj) or '',
+            ]) + button_end
+        )
+    links.allow_tags = True
+    links.short_description = _('Links')
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.submissionUser = request.user
+        super().save_model(request, obj, form, change)
+
+    def get_fieldsets(self, request, obj=None):
+        if not obj:
+            return self.add_fieldsets
+        else:
+            return super().get_fieldsets(request, obj)
+
 
 @admin.register(Registration)
 class RegistrationAdmin(admin.ModelAdmin):
     inlines = [EventRegistrationInline]
-    list_display = ['customer', 'dateTime', 'priceWithDiscount', 'student']
-    list_filter = ['dateTime', 'student', 'invoice__paidOnline']
-    search_fields = ['=customer__first_name', '=customer__last_name', 'customer__email']
-    ordering = ('-dateTime', )
+    list_display = ['invoice_name', 'final', 'dateTime', 'total',]
+    list_filter = ['final', 'dateTime', 'invoice__paidOnline']
+    search_fields = [
+        'invoice__firstName', 'invoice__lastName', 'invoice__email',
+    ]
+    ordering = ('-final', '-dateTime', )
     fields = (
-        'customer_link', 'priceWithDiscount', 'student', 'dateTime', 'comments',
-        'howHeardAboutUs'
+        ('final', 'invoice_expiry'), 'invoice_name', 'invoice_link',
+        'total', 'dateTime', 'comments',
+        'howHeardAboutUs', 'submissionUser',
     )
-    readonly_fields = ('customer_link', )
+    readonly_fields = ('total', 'invoice_name', 'invoice_link', 'invoice_expiry')
 
-    def customer_link(self, obj):
-        change_url = reverse('admin:core_customer_change', args=(obj.customer.id, ))
-        return mark_safe('<a href="%s">%s</a>' % (change_url, obj.customer))
+    def invoice_name(self, obj):
+        name = getattr(obj.invoice, 'fullName', _('N/A'))
+        if getattr(obj.invoice, 'email', None):
+            name += ': %s' % obj.invoice.email
+        return name
+    invoice_name.short_description = _('Registrant Name')
 
-    customer_link.allow_tags = True
-    customer_link.short_description = _("Customer")
+    def invoice_link(self, obj):
+        change_url = reverse('admin:core_invoice_change', args=(obj.invoice.id, ))
+        return mark_safe('<a href="%s">%s</a>' % (change_url, obj.invoice))
+    invoice_link.allow_tags = True
+    invoice_link.short_description = _("Invoice")
 
-    def save_formset(self, request, form, formset, change):
-        instances = formset.save(commit=False)
-        for obj in formset.deleted_objects:
-            obj.delete()
-        for instance in instances:
-            if not hasattr(instance, 'customer'):
-                instance.customer = instance.registration.customer
-            instance.save()
-        formset.save_m2m()
-
-
-class TemporaryEventRegistrationInline(admin.StackedInline):
-    model = TemporaryEventRegistration
-    extra = 0
-
-    # These ensure that registration changes happen through the regular registration
-    # process.
-    def has_add_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-
-@admin.register(TemporaryRegistration)
-class TemporaryRegistrationAdmin(admin.ModelAdmin):
-    inlines = [TemporaryEventRegistrationInline, ]
-
-    list_display = ('__str__', 'student', 'dateTime', 'expirationDate')
-    search_fields = ('=firstName', '=lastName', 'email')
-    list_filter = ('dateTime', 'expirationDate', )
+    def invoice_expiry(self, obj):
+        return obj.invoice.expirationDate
+    invoice_expiry.short_description = _("Expiration Date")
 
 
 ######################################
 # Miscellaneous Admin classes
 
+class ClassDescriptionAdminForm(ModelTemplateMixin, ModelForm):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Allow the user to choose from the registered template choices.
+        self.fields['template'] = ChoiceField(
+            choices=self.get_template_choices(Series), required=True,
+            initial=getConstant('general__defaultSeriesPageTemplate')
+        )
+
+    class Meta:
+        model = ClassDescription
+        exclude = []
+
+
+
 @admin.register(ClassDescription)
 class ClassDescriptionAdmin(FrontendEditableAdminMixin, admin.ModelAdmin):
     list_display = ['title', 'danceTypeLevel', ]
     list_filter = ('danceTypeLevel', )
-    search_fields = ('title', )
+    search_fields = ('title', 'description',)
     prepopulated_fields = {"slug": ("title", )}
+    form = ClassDescriptionAdminForm
 
 
-class CustomerRegistrationInline(admin.StackedInline):
-    model = Registration
-    fields = ('registration_link', 'eventregistration_list')
-    readonly_fields = ('registration_link', 'eventregistration_list')
+class CustomerEventRegistrationInline(admin.StackedInline):
+    model = EventRegistration
+    fields = ('registration_link', 'eventregistration_details')
+    readonly_fields = ('registration_link', 'eventregistration_details')
     extra = 0
 
     def registration_link(self, obj):
-        change_url = reverse('admin:core_registration_change', args=(obj.id, ))
-        if obj.dateTime:
+        change_url = reverse('admin:core_registration_change', args=(obj.registration.id, ))
+        if obj.registration.dateTime:
             return mark_safe(
                 '%s: <a href="%s">%s</a>' % (
-                    obj.dateTime.strftime('%b. %d, %Y'), change_url, obj.__str__()
+                    obj.registration.dateTime.strftime('%b. %d, %Y'), change_url, obj.registration.__str__()
                 )
             )
         else:
-            return mark_safe('<a href="%s">%s</a>' % (change_url, obj.__str__()))
+            return mark_safe('<a href="%s">%s</a>' % (change_url, obj.registration.__str__()))
 
     registration_link.short_description = _('Registration')
     registration_link.allow_tags = True
 
-    def eventregistration_list(self, obj):
-        eregs = obj.eventregistration_set.all()
-        if not eregs:
-            return ''
-        return_string = '<ul>'
+    def eventregistration_details(self, obj):
+        return_string = ''
+        if obj.cancelled:
+            return_string += '<em>%s</em> ' % _('CANCELLED:')
+        if obj.dropIn:
+            return_string += '<em>%s</em> ' % _('DROP-IN:')
+        if obj.event.month:
+            return_string += '%s %s, %s</li>' % (
+                month_name[obj.event.month], obj.event.year, obj.event.name
+            )
+        else:
+            return_string += obj.event.name
+        return mark_safe(return_string)
+    eventregistration_details.short_description = _('Details')
+    eventregistration_details.allow_tags = True
 
-        for ereg in eregs:
-            this_string = '<li>'
-            if ereg.cancelled:
-                this_string += '<em>%s</em> ' % _('CANCELLED:')
-            if ereg.dropIn:
-                this_string += '<em>%s</em> ' % _('DROP-IN:')
-            if ereg.event.month:
-                this_string += '%s %s, %s</li>' % (
-                    month_name[ereg.event.month], ereg.event.year, ereg.event.name
-                )
-            else:
-                this_string += '%s</li>' % ereg.event.name
-            return_string += this_string
-        return return_string
-    eventregistration_list.short_description = _('Event Registrations')
-    eventregistration_list.allow_tags = True
-
-    # Prevents adding new registrations without going through
-    # the standard registration process
     def has_add_permission(self, request, obj=None):
+        '''
+        Prevents adding new registrations without going through
+        the standard registration process.
+        '''
         return False
 
     def has_delete_permission(self, request, obj=None):
         return False
 
+    def get_queryset(self, request):
+        ''' Only show finalized registrations. '''
+        qs = super().get_queryset(request)
+        return qs.filter(registration__final=True)
+
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
     list_display = ('fullName', 'numClassSeries', 'numPublicEvents')
-    search_fields = ('=first_name', '=last_name', 'email')
+    search_fields = ('^first_name', '^last_name', 'email')
     readonly_fields = ('data', 'numClassSeries', 'numPublicEvents')
 
     fieldsets = (
@@ -577,13 +652,13 @@ class CustomerAdmin(admin.ModelAdmin):
 
     def emailCustomers(self, request, queryset):
         # Allows use of the email view to contact specific customers.
-        selected = request.POST.getlist(admin.ACTION_CHECKBOX_NAME)
+        selected = request.POST.getlist(ACTION_CHECKBOX_NAME)
         return HttpResponseRedirect(reverse('emailStudents') + "?customers=%s" % (
             ", ".join(selected)
         ))
     emailCustomers.short_description = _('Email selected customers')
 
-    inlines = [CustomerRegistrationInline, ]
+    inlines = [CustomerEventRegistrationInline, ]
     actions = ['emailCustomers']
 
 
@@ -606,12 +681,12 @@ class CustomerGroupAdminForm(ModelForm):
     )
 
     def __init__(self, *args, **kwargs):
-        super(CustomerGroupAdminForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         if self.instance.pk:
             self.initial['customers'] = self.instance.customer_set.values_list('pk', flat=True)
 
     def save(self, *args, **kwargs):
-        instance = super(CustomerGroupAdminForm, self).save(*args, **kwargs)
+        instance = super().save(*args, **kwargs)
         if instance.pk:
             instance.customer_set.clear()
             instance.customer_set.add(*self.cleaned_data['customers'])
@@ -624,7 +699,7 @@ class CustomerGroupAdminForm(ModelForm):
     class Media:
         js = (
             'admin/js/vendor/jquery/jquery.min.js',
-            'autocomplete_light/jquery.init.js',
+            'admin/js/jquery.init.js',
         )
 
 
@@ -636,7 +711,7 @@ class CustomerGroupAdmin(admin.ModelAdmin):
 
     def emailCustomers(self, request, queryset):
         # Allows use of the email view to contact specific customer groups.
-        selected = request.POST.getlist(admin.ACTION_CHECKBOX_NAME)
+        selected = request.POST.getlist(ACTION_CHECKBOX_NAME)
         return HttpResponseRedirect(reverse('emailStudents') + "?customergroup=%s" % (", ".join(selected)))
     emailCustomers.short_description = _('Email selected customer groups')
 
@@ -719,7 +794,7 @@ class LocationAdmin(admin.ModelAdmin):
             })
 
         # Otherwise just use the standard ModelAdmin method
-        return super(LocationAdmin, self).response_add(request, obj, post_url_continue)
+        return super().response_add(request, obj, post_url_continue)
 
     def response_change(self, request, obj):
         '''
@@ -754,7 +829,7 @@ class LocationAdmin(admin.ModelAdmin):
             return SimpleTemplateResponse('core/admin/location_popup_response.html', {
                 'popup_response_data': popup_response_data,
             })
-        return super(LocationAdmin, self).response_change(request, obj)
+        return super().response_change(request, obj)
 
 
 @admin.register(PricingTier)
@@ -848,7 +923,9 @@ class StaffMemberAdmin(FrontendEditableAdminMixin, TranslatableAdmin):
     )
 
     def instructor_status(self, obj):
-        return getattr(getattr(obj, 'instructor'), 'statusLabel')
+        instructor = getattr(obj, 'instructor', None)
+        if instructor:
+            return instructor.get_status_display()
     instructor_status.short_description = _('Instructor status')
 
     def instructor_availableForPrivates(self, obj):
@@ -884,25 +961,11 @@ class EventChildAdmin(PolymorphicChildModelAdmin):
     uuidLink.short_description = _('Direct Registration Link')
     uuidLink.allow_tags = True
 
-    # This is needed so that when an event is created, the year and month
-    # are properly set right away.
-    def save_related(self, request, form, formsets, change):
-        obj = form.instance
-        super(EventChildAdmin, self).save_related(request, form, formsets, change)
-
-        if obj.eventoccurrence_set.all():
-            obj.year = obj.getYearAndMonth()[0]
-            obj.month = obj.getYearAndMonth()[1]
-            obj.startTime = obj.eventoccurrence_set.order_by('startTime').first().startTime
-            obj.endTime = obj.eventoccurrence_set.order_by('endTime').last().endTime
-            obj.duration = sum([x.duration for x in obj.eventoccurrence_set.all() if not x.cancelled])
-            obj.save()
-
 
 class SeriesAdminForm(ModelForm):
 
     def __init__(self, *args, **kwargs):
-        super(SeriesAdminForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         # Series have registration enabled by default
         self.fields['status'].initial = Event.RegStatus.enabled
@@ -913,28 +976,6 @@ class SeriesAdminForm(ModelForm):
         # Allow adding additional rooms from a popup on Location, but not a popup on Room
         self.fields['room'].widget.can_add_related = False
         self.fields['room'].widget.can_change_related = False
-
-        self.fields['classDescription'] = ModelChoiceField(
-            queryset=ClassDescription.objects.all(),
-            widget=RelatedFieldWidgetWrapper(
-                autocomplete.ModelSelect2(
-                    url='autocompleteClassDescription',
-                    attrs={
-                        # This will set the input placeholder attribute:
-                        'data-placeholder': _('Enter an existing class series title or description'),
-                        # This will set the yourlabs.Autocomplete.minimumCharacters
-                        # options, the naming conversion is handled by jQuery
-                        'data-minimum-input-length': 2,
-                        'data-max-results': 10,
-                        'class': 'modern-style',
-                    },
-                ),
-                rel=Series._meta.get_field('classDescription').remote_field,
-                admin_site=self.admin_site,
-                can_add_related=True,
-                can_change_related=True,
-            )
-        )
 
         # Impose restrictions on new records, but not on existing ones.
         if not kwargs.get('instance', None):
@@ -958,24 +999,12 @@ class SeriesAdminForm(ModelForm):
         exclude = []
         widgets = {
             'location': LocationWithDataWidget,
-            'classDescription': autocomplete.ModelSelect2(
-                url='autocompleteClassDescription',
-                attrs={
-                    # This will set the input placeholder attribute:
-                    'data-placeholder': _('Enter a series title'),
-                    # This will set the yourlabs.Autocomplete.minimumCharacters
-                    # options, the naming conversion is handled by jQuery
-                    'data-minimum-input-length': 2,
-                    'data-max-results': 10,
-                    'class': 'modern-style',
-                }
-            ),
         }
 
     class Media:
         js = (
             'admin/js/vendor/jquery/jquery.min.js',
-            'autocomplete_light/jquery.init.js',
+            'admin/js/jquery.init.js',
             'js/serieslocation_capacity_change.js',
             'js/location_related_objects_lookup.js',
         )
@@ -1000,6 +1029,8 @@ class SeriesAdmin(FrontendEditableAdminMixin, EventChildAdmin):
         'location', 'status', 'registrationOpen', 'category',
         'session', 'pricingTier'
     )
+    search_fields = ('classDescription__title',)
+    autocomplete_fields = ['classDescription', ]
 
     def customers(self, obj):
         return obj.numRegistered
@@ -1009,18 +1040,20 @@ class SeriesAdmin(FrontendEditableAdminMixin, EventChildAdmin):
         return '%s %s' % (month_name[obj.month or 0], obj.year or '')
 
     def class_time(self, obj):
-        return obj.startTime.strftime('%A, %I:%M %p')
+        if obj.startTime:
+            return obj.startTime.strftime('%A, %I:%M %p')
 
     fieldsets = (
         (None, {
             'fields': (
                 'classDescription', ('location', 'room'), 'pricingTier',
-                ('category', 'session', 'allowDropins'), ('uuidLink', )
+                ('category', 'session'), ('partnerRequired', 'allowDropins',),
+                ('uuidLink', )
             ),
         }),
         (_('Override Display/Registration/Capacity'), {
             'classes': ('collapse', ),
-            'fields': ('status', 'closeAfterDays', 'capacity', ),
+            'fields': ('status', 'closeAfterDays', 'capacity',),
         }),
         (_('Additional data'), {
             'classes': ('collapse', ),
@@ -1033,7 +1066,7 @@ class SeriesAdmin(FrontendEditableAdminMixin, EventChildAdmin):
     def get_form(self, request, obj=None, **kwargs):
         # just save obj reference for future processing in Inline
         request._obj_ = obj
-        form = super(SeriesAdmin, self).get_form(request, obj, **kwargs)
+        form = super().get_form(request, obj, **kwargs)
         form.admin_site = self.admin_site
         return form
 
@@ -1042,16 +1075,22 @@ class SeriesAdmin(FrontendEditableAdminMixin, EventChildAdmin):
         obj.save()
 
 
-class PublicEventAdminForm(ModelForm):
+class PublicEventAdminForm(ModelTemplateMixin, ModelForm):
 
     def __init__(self, *args, **kwargs):
-        super(PublicEventAdminForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.fields['status'].initial = Event.RegStatus.disabled
 
         # Allow adding additional rooms from a popup on Location, but not a popup on Room
         self.fields['room'].widget.can_add_related = False
         self.fields['room'].widget.can_change_related = False
+
+        # Allow the user to choose from the registered template choices.
+        self.fields['template'] = ChoiceField(
+            choices=self.get_template_choices(self.Meta.model), required=True,
+            initial=getConstant('general__defaultPublicEventPageTemplate')
+        )
 
         # Impose restrictions on new records, but not on existing ones.
         if not kwargs.get('instance', None):
@@ -1107,13 +1146,19 @@ class PublicEventAdmin(FrontendEditableAdminMixin, EventChildAdmin):
 
     fieldsets = (
         (None, {
-            'fields': ('title', 'slug', 'category', 'session', ('location', 'room'), )
+            'fields': (
+                'title', 'slug', 'category', 'session', 'partnerRequired',
+                ('location', 'room'),
+            )
         }),
         (_('Registration/Visibility'), {
             'fields': ('status', ('pricingTier', 'capacity'), ),
         }),
         (_('Description/Link'), {
-            'fields': ('descriptionField', 'shortDescriptionField', 'link', 'uuidLink', )
+            'fields': (
+                'descriptionField', 'shortDescriptionField', 'template', 
+                'link', 'uuidLink',
+            )
         }),
         (_('Additional data'), {
             'classes': ('collapse', ),
@@ -1126,7 +1171,7 @@ class PublicEventAdmin(FrontendEditableAdminMixin, EventChildAdmin):
     def get_form(self, request, obj=None, **kwargs):
         # just save obj reference for future processing in Inline
         request._obj_ = obj
-        return super(PublicEventAdmin, self).get_form(request, obj, **kwargs)
+        return super().get_form(request, obj, **kwargs)
 
     def save_model(self, request, obj, form, change):
         obj.submissionUser = request.user

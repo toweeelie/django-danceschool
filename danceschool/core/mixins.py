@@ -2,12 +2,13 @@ from django.contrib.auth.views import redirect_to_login
 from django.contrib.sites.models import Site
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.urls import reverse
-from django.db.models import Case, When, F, Q, IntegerField, ExpressionWrapper
+from django.db.models import (
+    Case, When, F, Q, IntegerField, ExpressionWrapper
+)
 from django.db.models.functions import ExtractWeekDay
 from django.forms import ModelForm, ChoiceField, Media
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.template.loader import get_template, render_to_string
 from django.template import Template, Context
 from django.template.exceptions import TemplateDoesNotExist
@@ -18,12 +19,19 @@ from urllib.parse import quote
 from six import string_types
 import re
 from datetime import timedelta
+import logging
 
 from .constants import getConstant, REG_VALIDATION_STR
 from .tasks import sendEmail
-from .registries import plugin_templates_registry
+from .registries import plugin_templates_registry, model_templates_registry
 from .helpers import getReturnPage
-from .signals import request_discounts, apply_addons
+from .signals import (
+    request_discounts, apply_addons, check_voucher
+)
+
+
+# Define logger for this file
+logger = logging.getLogger(__name__)
 
 
 class EmailRecipientMixin(object):
@@ -152,7 +160,7 @@ class FinancialContextMixin(object):
             'businessName': getConstant('contact__businessName'),
         }
         context.update(kwargs)
-        return super(FinancialContextMixin, self).get_context_data(**context)
+        return super().get_context_data(**context)
 
 
 class StaffMemberObjectMixin(object):
@@ -267,13 +275,13 @@ class PluginTemplateMixin(object):
         ''' Permits setting of the template in the plugin instance configuration '''
         if instance and instance.template:
             self.render_template = instance.template
-        return super(PluginTemplateMixin, self).render(context, instance, placeholder)
+        return super().render(context, instance, placeholder)
 
     def templateChoiceFormFactory(self, request, choices):
         class PluginTemplateChoiceForm(ModelForm):
 
             def __init__(self, *args, **kwargs):
-                super(PluginTemplateChoiceForm, self).__init__(*args, **kwargs)
+                super().__init__(*args, **kwargs)
 
                 # Handle passed parameters
                 self.request = request
@@ -294,8 +302,9 @@ class PluginTemplateMixin(object):
                         css={'all': ('autocomplete_light/select2.css',)},
                         js=(
                             'admin/js/vendor/jquery/jquery.min.js',
-                            'autocomplete_light/jquery.init.js',
-                            'autocomplete_light/select2.js', 'js/select2_newtemplate.js',
+                            'admin/js/jquery.init.js',
+                            'autocomplete_light/select2.js',
+                            'js/select2_newtemplate.js',
                         )
                     )
                 return Media()
@@ -305,7 +314,7 @@ class PluginTemplateMixin(object):
 
     def get_form(self, request, obj=None, **kwargs):
         kwargs['form'] = self.templateChoiceFormFactory(request, self.get_template_choices())
-        return super(PluginTemplateMixin, self).get_form(request, obj, **kwargs)
+        return super().get_form(request, obj, **kwargs)
 
     def get_template_choices(self):
         # If templates are explicitly specified, use those
@@ -324,7 +333,39 @@ class PluginTemplateMixin(object):
             ]
 
         # If just one template is specified, use that
-        if self.render_template:
+        if getattr(self, 'render_template', None):
+            return [(self.render_template, self.render_template), ]
+
+        # No choices to report
+        return []
+
+
+class ModelTemplateMixin(object):
+    '''
+    This mixin is for models with a selectable custom template for individual
+    page rendering.  It is primarily used by the Event model and its children
+    such as PublicEvent and Series for custom event page templates.  The mixin
+    is used to augment the admin classes for these model classes.
+    '''
+
+    def get_template_choices(self, model):
+        # If templates are explicitly specified, use those
+        if hasattr(self, 'template_choices') and self.template_choices:
+            return self.template_choices
+
+        # If templates are registered, use those.
+        registered = [
+            x for x in model_templates_registry.values() if
+            issubclass(model, getattr(x, 'model', None))
+        ]
+        if registered:
+            return [
+                (x.template_name, getattr(x, 'description', None) or x.template_name)
+                for x in registered
+            ]
+
+        # If just one template is specified, use that
+        if getattr(self, 'render_template', None):
             return [(self.render_template, self.render_template), ]
 
         # No choices to report
@@ -506,14 +547,90 @@ class RegistrationAdjustmentsMixin(object):
     '''
     This mixin provides convenience methods for the standard request of discounts,
     vouchers, and addons that happens in each step of the registration process.
-    These methods reference a TemporaryRegistration object, but they do not modify
+    These methods reference a Registration object, but they do not modify
     it; that should be done in the view itself.
     '''
 
-    def getDiscounts(self, reg, initial_price):
+    # This should be overriden by subclasses where the customer information has
+    # been finalized so that customer-specific discounts and addons can be found.
+    customers_final = False
+
+    def getVoucher(
+        self, voucherId, invoice, prior_adjustment=0, first_name=None, last_name=None, email=None
+    ):
         '''
-        This method takes a registration and an initial price, and it returns an
+        This method looks for a voucher with the associated voucher ID, it checks
+        for eligibility, and it returns an updated dictionary
         '''
+
+        from danceschool.core.models import Customer
+
+        first_name = first_name or invoice.firstName
+        last_name = last_name or invoice.lastName
+        email = email or invoice.email
+
+        # This will only find a customer if all three are specified.
+        customer = Customer.objects.filter(
+            first_name=first_name,
+            last_name=last_name,
+            email=email
+        ).first()
+
+        voucher_response = check_voucher.send(
+            sender=RegistrationAdjustmentsMixin, voucherId=voucherId,
+            customer=customer, validateCustomer=(customer is not None),
+            invoice=invoice
+        )
+
+        voucher_response = [x[1] for x in voucher_response if len(x) > 1 and x[1]]
+        if (len(voucher_response) > 1):
+            # This shouldn't happen
+            logger.error('Received multiple voucher responses from signal handler.')
+            return {}
+        elif voucher_response:
+            subtotal = invoice.total + prior_adjustment
+            total = subtotal
+
+            if (
+                voucher_response[0].get('status', None) == 'valid' and
+                voucher_response[0].get('available', 0) > 0
+            ):
+                if voucher_response[0].get('beforeTax') is False:
+                    subtotal += invoice.taxes + invoice.adjustments
+
+                total = max(
+                    0, subtotal - voucher_response[0].get('available', 0)
+                )
+
+            return {
+                'voucherId': voucher_response[0].get('id', None),
+                'voucherName': voucher_response[0].get('name', None),
+                'voucherAmount': subtotal - total,
+                'beforeTax': voucher_response[0].get('beforeTax')
+            }
+        else:
+            return {}
+
+    def getDiscounts(self, invoice, registration=None, initial_price=None):
+        '''
+        This method takes a registration and an initial price, and it returns
+        a tuple that contains all the information needed to process any
+        applicable discounts.
+        '''
+
+        from danceschool.core.models import Registration
+
+        if not registration:
+            registration = Registration.objects.filter(invoice=invoice).first()
+        if not initial_price and registration:
+            initial_price = registration.grossTotal
+        else:
+            initial_price = invoice.grossTotal
+
+        # The discounts app only applies first-time customer discounts in the
+        # final stage, in case the customer information changes.  So, we need
+        # to let it know if this mixin is attached to RegistrationSummaryView.
+        sender = RegistrationAdjustmentsMixin
 
         # If the discounts app is enabled, then the return value to this signal
         # will contain information on the discounts to be applied, as well as
@@ -522,8 +639,10 @@ class RegistrationAdjustmentsMixin(object):
         # DiscountApplication namedtuple defined in the discounts app, with
         # 'items' and 'ineligible_total' keys.
         discount_responses = request_discounts.send(
-            sender=RegistrationAdjustmentsMixin,
-            registration=reg,
+            sender=sender,
+            registration=registration,
+            invoice=invoice,
+            customer_final=self.customers_final
         )
         discount_responses = [x[1] for x in discount_responses if len(x) > 1 and x[1]]
 
@@ -554,16 +673,18 @@ class RegistrationAdjustmentsMixin(object):
         except (IndexError, TypeError) as e:
             logger.error('Error in applying discount responses: %s' % e)
 
-        return (discount_codes, total_discount_amount, discounted_total)
+        return (discount_codes, total_discount_amount)
 
-    def getAddons(self, reg):
+    def getAddons(self, invoice, registration=None):
         '''
         Return a list of any free add-on items that should be applied.
         '''
 
         addon_responses = apply_addons.send(
             sender=RegistrationAdjustmentsMixin,
-            registration=reg
+            invoice=invoice,
+            registration=registration,
+            customer_final=self.customers_final
         )
         addons = []
         for response in addon_responses:

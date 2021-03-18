@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.forms import ModelForm, HiddenInput
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from .models import (
     InstructorPrivateLessonDetails, InstructorAvailabilitySlot,
@@ -38,7 +38,7 @@ class PrivateLessonCustomerInline(admin.StackedInline):
 
 class PrivateLessonTeacherInlineForm(ModelForm):
     def __init__(self, *args, **kwargs):
-        super(PrivateLessonTeacherInlineForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.fields['staffMember'].label = _('Instructor')
         self.fields['category'].initial = getConstant('privateLessons__eventStaffCategoryPrivateLesson').id
@@ -83,8 +83,9 @@ class PrivateLessonTeacherInline(admin.StackedInline):
 
 class PrivateLessonEventRegistrationInline(EventRegistrationInline):
     ''' View/edit but do not add/delete EventRegistrations from here. '''
-    fields = ['role', 'cancelled', 'price', 'netPrice']
-    readonly_fields = ['price', 'netPrice']
+    fields = ['role', 'cancelled', 'item_grossTotal', 'item_total']
+    readonly_fields = ['item_grossTotal', 'item_total']
+    add_readonly_field = ['item_grossTotal', 'item_total']
 
 
 class PrivateLessonEventAdminForm(ModelForm):

@@ -3,7 +3,7 @@ This file defines a variety of preferences that must be set in the DB,
 but can be changed dynamically.
 '''
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from dynamic_preferences.types import BooleanPreference, StringPreference, Section
 from dynamic_preferences.registries import global_preferences_registry
@@ -38,7 +38,7 @@ class RequirementErrorMessage(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs
 
@@ -56,6 +56,6 @@ class RequirementWarningMessage(StringPreference):
     default = ''
 
     def get_field_kwargs(self):
-        field_kwargs = super(self.__class__, self).get_field_kwargs()
+        field_kwargs = super().get_field_kwargs()
         field_kwargs['required'] = False
         return field_kwargs

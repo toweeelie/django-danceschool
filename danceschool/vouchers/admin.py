@@ -1,16 +1,18 @@
 from django.contrib import admin
 from django.forms import ModelForm, ModelChoiceField, TextInput
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
+from django.urls import reverse
+from django.utils.safestring import mark_safe
 
 from dal import autocomplete
 
-from danceschool.core.models import Customer, Registration, TemporaryRegistration
+from danceschool.core.models import Customer, Invoice
 from danceschool.core.admin import CustomerAdmin
 
 from .models import (
     VoucherCategory, Voucher, DanceTypeVoucher, ClassVoucher,
     SeriesCategoryVoucher, PublicEventCategoryVoucher, SessionVoucher,
-    CustomerGroupVoucher, CustomerVoucher, VoucherUse, TemporaryVoucherUse,
+    CustomerGroupVoucher, CustomerVoucher, VoucherUse,
     VoucherCredit
 )
 
@@ -39,7 +41,7 @@ class CustomerVoucherInlineForm(ModelForm):
     class Media:
         js = (
             'admin/js/vendor/jquery/jquery.min.js',
-            'autocomplete_light/jquery.init.js',
+            'admin/js/jquery.init.js',
         )
 
 
@@ -60,24 +62,11 @@ class CustomerAdminWithVouchers(CustomerAdmin):
     inlines = CustomerAdmin.inlines + [CustomerVoucherInline]
 
 
-class RegistrationVoucherInline(admin.TabularInline):
+class InvoiceVoucherInline(admin.TabularInline):
     model = VoucherUse
     extra = 0
     readonly_fields = ['voucher', 'amount']
-
-    # Prevents adding new voucher uses without going through
-    # the standard registration process
-    def has_add_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-
-class TemporaryRegistrationVoucherInline(admin.TabularInline):
-    model = TemporaryVoucherUse
-    extra = 0
-    readonly_fields = ['voucher', 'amount']
+    exclude = ['applied', 'beforeTax']
 
     # Prevents adding new voucher uses without going through
     # the standard registration process
@@ -127,7 +116,17 @@ class ClassVoucherInline(admin.StackedInline):
 class VoucherUseInline(admin.TabularInline):
     model = VoucherUse
     extra = 0
-    readonly_fields = ['registration', 'amount']
+    fields = ('viewInvoiceLink', 'creationDate', 'amount', 'notes')
+    readonly_fields = ('viewInvoiceLink', 'creationDate', 'amount')
+
+    def viewInvoiceLink(self, obj):
+        if obj.id:
+            change_url = reverse('viewInvoice', args=(obj.invoice.id, ))
+            return mark_safe(
+                '<a class="btn btn-outline-secondary" href="%s">%s</a>' % (change_url, obj.invoice.id)
+            )
+    viewInvoiceLink.allow_tags = True
+    viewInvoiceLink.short_description = _('Invoice')
 
     # Prevents adding new voucher uses without going through
     # the standard registration process.
@@ -136,6 +135,13 @@ class VoucherUseInline(admin.TabularInline):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    def get_queryset(self, request):
+        '''
+        Inline only shows voucher uses associated with finalized registrations.
+        '''
+        qs = super().get_queryset(request)
+        return qs.filter(applied=True)
 
 
 class VoucherCreditInlineForm(ModelForm):
@@ -164,19 +170,20 @@ class VoucherAdmin(admin.ModelAdmin):
     ]
     list_display = [
         'voucherId', 'name', 'category', 'amountLeft', 'maxAmountPerUse',
-        'expirationDate', 'isEnabled', 'restrictions'
+        'isEnabled', 'restrictions'
     ]
     list_filter = [
         'category', 'expirationDate', 'disabled', 'forFirstTimeCustomersOnly',
-        'forPreviousCustomersOnly', 'doorOnly'
+        'forPreviousCustomersOnly', 'doorOnly', 'beforeTax',
     ]
     search_fields = ['voucherId', 'name', 'description']
-    readonly_fields = ['refundAmount', 'creationDate']
+    add_readonly_fields = ['refundAmount', 'creationDate', 'amountLeft']
+    readonly_fields = ['originalAmount', 'refundAmount', 'creationDate', 'amountLeft']
     actions = ['enableVoucher', 'disableVoucher']
 
     fieldsets = (
         (None, {
-            'fields': (('voucherId', 'category'), 'name', 'description', ('originalAmount', 'maxAmountPerUse'), ),
+            'fields': (('voucherId', 'category'), 'name', 'description', ('originalAmount', 'amountLeft'), ('maxAmountPerUse', 'beforeTax')),
         }),
         (_('Voucher Restrictions'), {
             'fields': (
@@ -192,6 +199,11 @@ class VoucherAdmin(admin.ModelAdmin):
         }),
     )
 
+    def get_readonly_fields(self, request, obj=None):
+        if not obj:
+            return self.add_readonly_fields
+        return self.readonly_fields
+
     def isEnabled(self, obj):
         return obj.disabled is False
     isEnabled.short_description = _('Enabled')
@@ -199,6 +211,8 @@ class VoucherAdmin(admin.ModelAdmin):
 
     def restrictions(self, obj):
         text = []
+        if not obj.beforeTax:
+            text.append(_('Applied after tax'))
         if obj.singleUse:
             text.append(_('Single use'))
         if obj.forFirstTimeCustomersOnly:
@@ -213,8 +227,10 @@ class VoucherAdmin(admin.ModelAdmin):
             text.append(_('Specific class'))
         if obj.dancetypevoucher_set.all().exists():
             text.append(_('Specific dance type/level'))
+        if obj.expirationDate:
+            text.append(_('Expires {date}'.format(date=obj.expirationDate.strftime('%x'))))
         return ', '.join([str(x) for x in text])
-    restrictions.short_description = _('Restrictions')
+    restrictions.short_description = _('Restrictions/Notes')
 
     def disableVoucher(self, request, queryset):
         rows_updated = queryset.update(disabled=True)
@@ -235,9 +251,8 @@ class VoucherAdmin(admin.ModelAdmin):
     enableVoucher.short_description = _('Enable selected Vouchers')
 
 
-# This adds inlines to Registration and TemporaryRegistration without subclassing
-admin.site._registry[Registration].inlines.insert(0, RegistrationVoucherInline)
-admin.site._registry[TemporaryRegistration].inlines.insert(0, TemporaryRegistrationVoucherInline)
+# This adds inlines to Invoice without subclassing
+admin.site._registry[Invoice].inlines.insert(0, InvoiceVoucherInline)
 
 admin.site.register(VoucherCategory)
 admin.site.register(Voucher, VoucherAdmin)

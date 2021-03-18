@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.forms import ModelForm, ModelChoiceField
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.utils.html import format_html
 
 from dal import autocomplete
@@ -48,7 +48,7 @@ class RequirementAdminForm(ModelForm):
     class Media:
         js = (
             'admin/js/vendor/jquery/jquery.min.js',
-            'autocomplete_light/jquery.init.js',
+            'admin/js/jquery.init.js',
         )
 
 

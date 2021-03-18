@@ -4,12 +4,15 @@ This file contains basic tests for the core app.
 
 from django.urls import reverse
 from django.utils import timezone
+from django.test import TestCase
+from django.contrib.auth.models import User
 
 from datetime import timedelta
 from calendar import month_name
 import dateutil.parser
+from itertools import chain
 
-from .models import EventOccurrence, Event, TemporaryRegistration
+from .models import EventOccurrence, Event, Registration, Invoice
 from .constants import getConstant, REG_VALIDATION_STR
 from .utils.tests import DefaultSchoolTestCase
 
@@ -27,8 +30,8 @@ class RegistrationTest(DefaultSchoolTestCase):
         # are no open or closed series on the registration page.
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
 
         # Check that the Add a class series page loads for the superuser
         self.client.login(username=self.superuser.username, password='pass')
@@ -45,8 +48,8 @@ class RegistrationTest(DefaultSchoolTestCase):
         self.assertEqual(s.registrationOpen, True)
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [s.__repr__(), ])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [s.__repr__(), ])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
 
     def test_past_series(self):
         '''
@@ -57,8 +60,8 @@ class RegistrationTest(DefaultSchoolTestCase):
         s = self.create_series()
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [s.__repr__(), ])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [s.__repr__(), ])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
 
         # Modify the existing class series to set the only eventoccurrence
         # in the past, and check that it now longer shows up at all
@@ -66,13 +69,12 @@ class RegistrationTest(DefaultSchoolTestCase):
         ec.startTime = timezone.now() + timedelta(days=-1)
         ec.endTime = timezone.now() + timedelta(days=-1, hours=1)
         ec.save()
-        s.save()
 
         self.assertEqual(s.registrationOpen, False)
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
         self.assertEqual(s.status, Event.RegStatus.enabled)
 
     def test_closed_series(self):
@@ -102,8 +104,8 @@ class RegistrationTest(DefaultSchoolTestCase):
         self.assertEqual(s.registrationOpen, False)
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [s.__repr__(), ])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [s.__repr__(), ])
         self.assertEqual(s.status, Event.RegStatus.enabled)
 
         # Delete the old occurrence, and check that registration opens back up
@@ -112,8 +114,8 @@ class RegistrationTest(DefaultSchoolTestCase):
         self.assertEqual(s.registrationOpen, True)
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [s.__repr__(), ])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [s.__repr__(), ])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
 
     def test_individual_class_page_visibility(self):
         '''
@@ -137,12 +139,12 @@ class RegistrationTest(DefaultSchoolTestCase):
 
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
 
         response = self.client.get(reverse('singleClassRegistration', args=(str(s.uuid),)))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [s.__repr__(), ])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [s.__repr__(), ])
 
         response = self.client.get(reverse('classView', args=(s.year, month_name[s.month], s.slug)))
         self.assertEqual(response.status_code, 404)
@@ -154,8 +156,8 @@ class RegistrationTest(DefaultSchoolTestCase):
 
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [])
-        self.assertQuerysetEqual(response.context['regClosedSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [])
+        self.assertQuerysetEqual(response.context_data['regClosedSeries'], [])
 
         response = self.client.get(reverse('singleClassRegistration', args=(str(s.uuid),)))
         self.assertEqual(response.status_code, 404)
@@ -174,7 +176,7 @@ class RegistrationTest(DefaultSchoolTestCase):
 
         response = self.client.get(reverse('registration'))
         self.assertEqual(response.status_code, 200)
-        self.assertQuerysetEqual(response.context['regOpenSeries'], [s.__repr__(), ])
+        self.assertQuerysetEqual(response.context_data['regOpenSeries'], [s.__repr__(), ])
 
         # Since this is an anonymous user, check that there is no option to register
         # at-the-door
@@ -185,38 +187,27 @@ class RegistrationTest(DefaultSchoolTestCase):
         response = self.client.post(reverse('registration'), post_data, follow=True)
         self.assertTrue(response.context_data['form'].errors.get('__all__'))
 
-        # Attempt to sign up for multiple roles for the same series and ensure that it fails
-        post_data = {
-            'series_%s' % s.id: (
-                response.context_data['form'].fields['series_%s' % s.id].choices[0][0],
-                response.context_data['form'].fields['series_%s' % s.id].choices[1][0]
-            )
-        }
-        response = self.client.post(reverse('registration'), post_data, follow=True)
-        self.assertEqual(
-            response.context_data['form'].errors.get('__all__'),
-            ['Must select only one role.', ]
-        )
-
         # Sign up for the series, and check that we proceed to the student information page.
         # Because of the way that roles are encoded on this form, we just grab the value to pass
         # from the form itself.
-        post_data = {
-            'series_%s' % s.id: response.context_data['form'].fields['series_%s' % s.id].choices[0][0]
-        }
+        post_data = {'series_%s_%s' % (
+            s.id, response.context_data['form'].fields['series_%s' % s.id].field_choices[0].get('value')
+        ): [1,]}
 
         response = self.client.post(reverse('registration'), post_data, follow=True)
         self.assertEqual(response.redirect_chain, [(reverse('getStudentInfo'), 302)])
 
-        tr = TemporaryRegistration.objects.get(
-            id=self.client.session[REG_VALIDATION_STR].get('temporaryRegistrationId')
+        invoice = Invoice.objects.get(
+            id=self.client.session[REG_VALIDATION_STR].get('invoiceId')
         )
-        self.assertTrue(tr.temporaryeventregistration_set.filter(event__id=s.id).exists())
+        tr = Registration.objects.filter(invoice=invoice).first()
+        self.assertTrue(tr.eventregistration_set.filter(event__id=s.id).exists())
+        self.assertFalse(tr.final)
         self.assertEqual(tr.payAtDoor, False)
 
         # Check that the student info page lists the correct item amounts and subtotal
-        self.assertEqual(tr.temporaryeventregistration_set.get(event__id=s.id).price, s.getBasePrice())
-        self.assertEqual(response.context_data.get('subtotal'), s.getBasePrice())
+        self.assertEqual(invoice.grossTotal, s.getBasePrice())
+        self.assertEqual(response.context_data.get('invoice').total, s.getBasePrice())
 
         # Try to sign up without agreeing to the policies, and ensure that it fails
         post_data = {
@@ -235,9 +226,9 @@ class RegistrationTest(DefaultSchoolTestCase):
 
         # Since there are no discounts or vouchers applied, check that the net price
         # and gross price match
-        self.assertEqual(response.context_data.get('totalPrice'), s.getBasePrice())
-        self.assertEqual(response.context_data.get('netPrice'), response.context_data.get('totalPrice'))
-        self.assertEqual(response.context_data.get('is_free'), False)
+        self.assertEqual(response.context_data.get('invoice').grossTotal, s.getBasePrice())
+        self.assertEqual(response.context_data.get('grossTotal'), response.context_data.get('total'))
+        self.assertEqual(response.context_data.get('zero_balance'), False)
         self.assertEqual(response.context_data.get('total_discount_amount'), 0)
 
 
@@ -384,3 +375,43 @@ class SubstituteTeacherTest(DefaultSchoolTestCase):
             'One or more classes you have selected already has a substitute teacher for that class.',
             response.context_data['form'].errors.get('occurrences')
         )
+
+
+class AdminTest(TestCase):
+    '''
+    Check that all admin add and changelist pages are functional at least for
+    superusers.
+    '''
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.superuser = User.objects.create_superuser(
+            'admin',
+            'admin@test.com',
+            'pass',
+            first_name='Frankie',
+            last_name='Manning',
+        )
+
+    def test_admin_pages(self):
+        '''
+        Log in as superuser, get the list of admin pages, and check that all
+        changelist and add pages return 200.
+        '''
+        response = self.client.get('/admin/')
+        self.assertEqual(response.status_code, 302)
+        
+        self.client.login(username=self.superuser.username, password='pass')
+        response = self.client.get('/admin/')
+        self.assertEqual(response.status_code, 200)
+
+        app_list = response.context_data.get('app_list', [])
+        self.assertNotEqual(app_list, [])
+
+        for model in chain(*[x.get('models', []) for x in app_list]):
+            if model.get('admin_url'):
+                response = self.client.get(model['admin_url'])
+                self.assertEqual(response.status_code, 200)
+            if model.get('add_url'):
+                response = self.client.get(model['add_url'])
+                self.assertEqual(response.status_code, 200)

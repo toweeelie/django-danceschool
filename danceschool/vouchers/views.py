@@ -1,7 +1,7 @@
 from django.template import Template, Context
 from django.views.generic import FormView
 from django.test import RequestFactory
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.db import IntegrityError
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import HttpResponseBadRequest, HttpResponseRedirect
@@ -15,7 +15,7 @@ import string
 from braces.views import PermissionRequiredMixin
 
 from danceschool.core.models import Invoice
-from danceschool.core.constants import getConstant, INVOICE_VALIDATION_STR
+from danceschool.core.constants import getConstant, PAYMENT_VALIDATION_STR
 from danceschool.core.mixins import EmailRecipientMixin, SiteHistoryMixin
 from danceschool.core.helpers import emailErrorMessage
 
@@ -36,7 +36,7 @@ class GiftCertificateCustomizeView(FormView):
         Check that a valid Invoice ID has been passed in session data,
         and that said invoice is marked as paid.
         '''
-        paymentSession = request.session.get(INVOICE_VALIDATION_STR, {})
+        paymentSession = request.session.get(PAYMENT_VALIDATION_STR, {})
         self.invoiceID = paymentSession.get('invoiceID')
         self.amount = paymentSession.get('amount', 0)
         self.success_url = paymentSession.get('success_url', reverse('registration'))
@@ -50,7 +50,7 @@ class GiftCertificateCustomizeView(FormView):
         if i.unpaid or i.amountPaid != self.amount:
             return HttpResponseBadRequest(_('Passed invoice is not paid.'))
 
-        return super(GiftCertificateCustomizeView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):
         '''
@@ -133,7 +133,7 @@ class GiftCertificateCustomizeView(FormView):
         )
 
         # Remove the invoice session data
-        self.request.session.pop(INVOICE_VALIDATION_STR, None)
+        self.request.session.pop(PAYMENT_VALIDATION_STR, None)
 
         return HttpResponseRedirect(self.get_success_url())
 
@@ -142,7 +142,7 @@ class GiftCertificatePDFView(PDFTemplateView):
     template_name = 'vouchers/pdf/giftcertificate_template.html'
 
     def get_context_data(self, **kwargs):
-        context = super(GiftCertificatePDFView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         template = getConstant('vouchers__giftCertPDFTemplate')
 

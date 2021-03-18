@@ -1,5 +1,5 @@
 from django.http import JsonResponse, HttpResponseBadRequest
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth.models import User
 from django.contrib.sites.shortcuts import get_current_site
@@ -11,8 +11,8 @@ from paypalrestsdk import Payment
 from paypalrestsdk.exceptions import ResourceNotFound
 from datetime import timedelta
 
-from danceschool.core.models import TemporaryRegistration, Invoice
-from danceschool.core.constants import getConstant, INVOICE_VALIDATION_STR
+from danceschool.core.models import Invoice
+from danceschool.core.constants import getConstant, PAYMENT_VALIDATION_STR
 
 from .models import PaypalPaymentRecord
 
@@ -25,14 +25,13 @@ def createPaypalPayment(request):
     '''
     This view handles the creation of Paypal Express Checkout Payment objects.
 
-    All Express Checkout payments must either be associated with a pre-existing Invoice
-    or a registration, or they must have an amount and type passed in the post data
+    All Express Checkout payments must either be associated with a pre-existing
+    Invoice, or they must have an amount and type passed in the post data
     (such as gift certificate payment requests).
     '''
     logger.info('Received request for Paypal Express Checkout payment.')
 
     invoice_id = request.POST.get('invoice_id')
-    tr_id = request.POST.get('reg_id')
     amount = request.POST.get('amount')
     submissionUserId = request.POST.get('user_id')
     transactionType = request.POST.get('transaction_type')
@@ -56,21 +55,19 @@ def createPaypalPayment(request):
             logger.warning('Invalid user passed, submissionUser will not be recorded.')
 
     try:
-        # Invoice transactions are usually payment on an existing invoice.
+        # Invoice transactions are payment on an existing invoice, including
+        # registrations.
         if invoice_id:
             this_invoice = Invoice.objects.get(id=invoice_id)
+            if this_invoice.status == Invoice.PaymentStatus.preliminary:
+                this_invoice.expirationDate = timezone.now() + timedelta(
+                    minutes=getConstant('registration__sessionExpiryMinutes')
+                )
+            this_invoice.status = Invoice.PaymentStatus.unpaid
             this_description = _('Invoice Payment: %s' % this_invoice.id)
             if not amount:
                 amount = this_invoice.outstandingBalance
-        # This is typical of payment at the time of registration
-        elif tr_id:
-            tr = TemporaryRegistration.objects.get(id=int(tr_id))
-            tr.expirationDate = timezone.now() + timedelta(minutes=getConstant('registration__sessionExpiryMinutes'))
-            tr.save()
-            this_invoice = Invoice.get_or_create_from_registration(tr, submissionUser=submissionUser)
-            this_description = _('Registration Payment: #%s' % tr_id)
-            if not amount:
-                amount = this_invoice.outstandingBalance
+            this_invoice.save()
         # All other transactions require both a transaction type and an amount to be specified
         elif not transactionType or not amount:
             logger.error('Insufficient information passed to createPaypalPayment view.')
@@ -87,12 +84,13 @@ def createPaypalPayment(request):
                 submissionUser=submissionUser,
                 calculate_taxes=(taxable is not False),
                 transactionType=transactionType,
+                status=Invoice.PaymentStatus.unpaid,
             )
     except (ValueError, ObjectDoesNotExist) as e:
         logger.error(
-            'Invalid registration information passed to ' +
-            'createPaypalPayment view: (%s, %s, %s)' % (
-                invoice_id, tr_id, amount
+            'Invalid invoice/amount information passed to ' +
+            'createPaypalPayment view: (%s, %s)' % (
+                invoice_id, amount
             )
         )
         logger.error(e)
@@ -120,7 +118,7 @@ def createPaypalPayment(request):
 
     for item in this_invoice.invoiceitem_set.all():
 
-        if not getConstant('registration__buyerPaysSalesTax'):
+        if not this_invoice.buyerPaysSalesTax:
             this_item_price = item.grossTotal - item.taxes
         else:
             this_item_price = item.grossTotal
@@ -232,14 +230,14 @@ def executePaypalPayment(request):
         )
 
         if addSessionInfo:
-            paymentSession = request.session.get(INVOICE_VALIDATION_STR, {})
+            paymentSession = request.session.get(PAYMENT_VALIDATION_STR, {})
 
             paymentSession.update({
                 'invoiceID': str(this_invoice.id),
                 'amount': float(payment.transactions[0].amount.total),
                 'successUrl': successUrl,
             })
-            request.session[INVOICE_VALIDATION_STR] = paymentSession
+            request.session[PAYMENT_VALIDATION_STR] = paymentSession
 
         return JsonResponse({'paid': True})
     else:

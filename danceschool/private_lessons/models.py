@@ -1,15 +1,14 @@
 from django.db import models
 from django.db.models import Q
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 from django.urls import reverse
 
 from datetime import timedelta
-from djchoices import DjangoChoices, ChoiceItem
 
 from danceschool.core.models import (
     Instructor, Location, Room, DanceRole, Event, PricingTier,
-    TemporaryEventRegistration, EventRegistration, Customer
+    EventRegistration, Customer
 )
 from danceschool.core.constants import getConstant
 from danceschool.core.mixins import EmailRecipientMixin
@@ -156,8 +155,8 @@ class PrivateLessonEvent(Event):
         teacherNames = ' and '.join([x.staffMember.fullName for x in self.eventstaffmember_set.all()])
         if self.customers:
             customerNames = ' ' + ' and '.join([x.fullName for x in self.customers])
-        elif self.temporaryeventregistration_set.all():
-            names = ' and '.join([x.registration.fullName for x in self.temporaryeventregistration_set.all()])
+        elif self.eventregistration_set.all():
+            names = ' and '.join([x.registration.fullName for x in self.eventregistration_set.all()])
             customerNames = ' ' + names if names else ''
         else:
             customerNames = ''
@@ -183,7 +182,7 @@ class PrivateLessonEvent(Event):
         ''' Set registration status to hidden if it is not specified otherwise '''
         if not self.status:
             self.status == Event.RegStatus.hidden
-        super(PrivateLessonEvent, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return str(self.name)
@@ -222,11 +221,11 @@ class PrivateLessonCustomer(models.Model):
 
 class InstructorAvailabilitySlot(models.Model):
 
-    class SlotStatus(DjangoChoices):
-        available = ChoiceItem('A', _('Available'))
-        booked = ChoiceItem('B', _('Booked'))
-        tentative = ChoiceItem('T', _('Tentative Booking'))
-        unavailable = ChoiceItem('U', _('Unavailable'))
+    class SlotStatus(models.TextChoices):
+        available = ('A', _('Available'))
+        booked = ('B', _('Booked'))
+        tentative = ('T', _('Tentative Booking'))
+        unavailable = ('U', _('Unavailable'))
 
     instructor = models.ForeignKey(Instructor, verbose_name=_('Instructor'), on_delete=models.CASCADE)
     pricingTier = models.ForeignKey(
@@ -244,18 +243,14 @@ class InstructorAvailabilitySlot(models.Model):
     status = models.CharField(max_length=1, choices=SlotStatus.choices, default=SlotStatus.available)
 
     # We need both a link to the registrations and a link to the event because
-    # in the event that an expired TemporaryRegistration is deleted, we still want to
+    # in the event that an expired (temporary) Registration is deleted, we still want to
     # be able to identify the Event that was created for this private lesson.
     lessonEvent = models.ForeignKey(
         PrivateLessonEvent, verbose_name=_('Scheduled lesson'), null=True, blank=True,
         on_delete=models.SET_NULL,
     )
-    temporaryEventRegistration = models.ForeignKey(
-        TemporaryEventRegistration, verbose_name=_('Temporary event registration'),
-        null=True, blank=True, on_delete=models.SET_NULL, related_name='privateLessonSlots'
-    )
     eventRegistration = models.ForeignKey(
-        EventRegistration, verbose_name=_('Final event registration'),
+        EventRegistration, verbose_name=_('event registration'),
         null=True, blank=True, on_delete=models.SET_NULL, related_name='privateLessonSlots'
     )
 
@@ -322,7 +317,10 @@ class InstructorAvailabilitySlot(models.Model):
                 self.status == self.SlotStatus.available or (
                     self.status == self.SlotStatus.tentative and
                     getattr(
-                        getattr(self.temporaryEventRegistration, 'registration', None),
+                        getattr(
+                            getattr(self.eventRegistration, 'invoiceItem', None),
+                            'invoice', None
+                        ),
                         'expirationDate',
                         timezone.now()
                     ) <= timezone.now()

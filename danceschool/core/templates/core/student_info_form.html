@@ -12,10 +12,14 @@
 
 			<table class="table">
 			<tbody>
-			{% for item in reg.temporaryeventregistration_set.all %}
+			{% for item in invoice.invoiceitem_set.all %}
 				<tr>
-					<td>{% if item.dropIn %}{% trans "DROP IN" %}: {% endif %}{{ item.event.name }}{% if item.role %} - {{ item.role.name }}{% endif %}</td>
-					<td>{{ currencySymbol }}{{ item.price|floatformat:2 }}</td>
+					{% if item.eventRegistration %}
+						<td>{% if item.eventRegistration.dropIn %}{% trans "DROP IN" %}: {% endif %}{{ item.eventRegistration.event.name }}{% if item.eventRegistration.role %} - {{ item.eventRegistration.role.name }}{% endif %}</td>
+					{% else %}
+					<td>{{ item.description }}</td>
+					{% endif %}
+					<td>{{ currencySymbol }}{{ item.grossTotal|floatformat:2 }}</td>
 				</tr>
 			{% endfor %}
 			</tbody>
@@ -38,18 +42,34 @@
 				{% endfor %}
 			</tbody>
 			{% endif %}
-			{% if voucher_amount %}
+			{% if voucher and voucher.beforeTax %}
 			<tbody>
 				<tr>
-					<td><strong>{% trans "Voucher" %}:</strong> {{ voucher_name }} ({{ voucher_id }})</td>
-					<td>-{{ currencySymbol }}{{ voucher_amount|floatformat:2 }}</td>
+					<td><strong>{% trans "Voucher" %}:</strong> {{ voucher.voucherName }} ({{ voucher.voucherId }})</td>
+					<td>-{{ currencySymbol }}{{ voucher.voucherAmount|floatformat:2 }}</td>
+				</tr>
+			</tbody>
+			{% endif %}
+			{% if invoice.taxes and invoice.buyerPaysSalesTax %}
+			<tbody>
+				<tr>
+					<th><em>{% trans "Taxes" %}</em></th>
+					<th>{{ currencySymbol }}{{ invoice.taxes|floatformat:2 }}</th>
+				</tr>
+			</tbody>
+			{% endif %}
+			{% if voucher and not voucher.beforeTax %}
+			<tbody>
+				<tr>
+					<td><strong>{% trans "Voucher" %}:</strong> {{ voucher.voucherName }} ({{ voucher.voucherId }})</td>
+					<td>-{{ currencySymbol }}{{ voucher.voucherAmount|floatformat:2 }}</td>
 				</tr>
 			</tbody>
 			{% endif %}
 			<tbody>
 				<tr style="font-size: 1.2em;">
 					<th><em>{% trans "Subtotal" %}:</em></th>
-					<th>{{ currencySymbol }}{{ discounted_subtotal|floatformat:2 }}</th>
+					<th>{{ currencySymbol }}{{ invoice.outstandingBalance|floatformat:2 }}</th>
 				</tr>
 			</tbody>
 
@@ -66,7 +86,12 @@
 
 
 	{% block form %}
-		<h3 class="mt-5 mb-3">{% trans "Step 2: Provide Your Student Information" %}</h3>
+		<h3 class="mt-5 mb-3">{% trans "Step 2: Provide Your Information" %}</h3>
+		{% if is_multiple_registration %}
+		<p><em>
+			{% trans "Note: You have signed up for more than one event registration, so you will be asked to confirm the name for each registration on the next page." %}
+		</em></p>
+		{% endif %}
 
 		{% if show_ajax_form %}
 			{% include "account/ajax_login.html" %}

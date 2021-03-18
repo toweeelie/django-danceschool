@@ -1,6 +1,44 @@
 Version History
 ===============
 
+0.9.2 - March 13, 2021
+-------------------------
+
+- Customer information has been moved from the Registration to the EventRegistration level, allowing several registration improvements
+- **New**: Multiple registrations for the same event by different customers, with customer information collected for each.  If multiple event registrations, then the registration process proceeds to an additional step to ensure that you collect the correct customer information for each registration.  This additional stap can be disabled through a site preference if specific customer information is not required.
+- **New**: Events can be designated "partner required," in which case partner name information is collected during registration and reported on the "View registrations" page.
+- Registration page now has "spinner" quantity inputs by default.  Old style checkboxes can still be chosen through a site preference.
+- Registration page input widgets are now in templates and therefore easier to customize.
+- "Register now" button is now sticky at the top of the main registration page.
+- The "I am a student" checkbox on Step 2 of the registration process can now be disabled using a site preference (so no need to create a custom view for this).
+- Fixed error with flat price discounts.
+- Fixed issue where 0 could be entered on a firstXRegistered discount to effectively disable it.
+- Miscellaneous registration interface improvements.
+
+
+0.9.1 - February 25, 2021
+-------------------------
+
+- **New**: Ability to select a custom templates for the individual event/class series page.  Your app can add additional template options by registering them with ``danceschool.core.registries.model_templates_registry``.
+- Added optional event and series page templates with register buttons that use Javascript to proceed directly into the registration process rather than requiring the user to select the event on the register page.
+- Cleanup of event and series page default template.
+- Miscellaneous bug fixes.
+
+
+0.9.0 - February 20, 2021
+-------------------------
+
+- Complete overhaul of logic underlying the registration system.  Invoices are now focal to the registration process, and price information related to purchases is only stored in the Invoice and its items.
+- **New** register app allows for rapid and highly customizable registration workflows for at the door registration and automatic check-in.  (Public-facing instances of the new register app are forthcoming).
+- **New** merch app allows for the sale of merchandise at the door, including item variants and basic inventory.
+- Significantly improved attendance tracking with occurrence-level event check-ins and occurrence-level tracking of drop-ins.
+- Vouchers can now be applied either before or after sales tax is calculated, and can be used on all purchases, not just event registrations.
+- Upgraded to Django 3.1, including use of native JSONfield and TextChoices to reduce external dependencies.
+- Numerous bug fixes with regard to taxation and refunds.
+- Many miscellaneous admin and interface enhancements.
+
+**Note:** This release applies a large number of schema migrations.  It is highly recommended to backup your database before upgrading to 0.9.0.
+
 
 0.8.6 - April 22, 2019
 -------------------------
