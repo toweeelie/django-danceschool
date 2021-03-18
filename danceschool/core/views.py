@@ -31,6 +31,8 @@ import re
 import logging
 import json
 
+from testapp.forms import QuickCustomerRegForm
+
 from .models import (
     Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
     StaffMember, Instructor, Invoice, Customer, EventCheckIn
@@ -130,7 +132,9 @@ class EventRegistrationSummaryView(PermissionRequiredMixin, SiteHistoryMixin, De
             'extras': extras_dict,
         }
         context.update(kwargs)
-        return super(EventRegistrationSummaryView, self).get_context_data(**context)
+        context =  super(EventRegistrationSummaryView, self).get_context_data(**context)
+        context['form'] = QuickCustomerRegForm(user = self.request.user, **kwargs)
+        return context
 
 
 class EventRegistrationJsonView(PermissionRequiredMixin, ListView):
