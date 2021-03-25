@@ -806,18 +806,20 @@ class Event(EmailRecipientMixin, PolymorphicModel):
         heldClosed = ('K', _('Registration held closed (override default behavior)'))
         heldOpen = ('H', _('Registration held open (override default)'))
         linkOnly = ('L', _(
-            'Registration open, but hidden from registration page and calendar ' +
+            'Registration open, but hidden from registration page ' +
             '(link required to register)'
         ))
         regHidden = ('C', _(
-            'Hidden from registration page and registration closed, but visible on calendar.'
+            'Hidden from registration page, registration closed, potentially visible on calendar.'
         ))
-        hidden = ('X', _('Event hidden and registration closed'))
+        hidden = ('X', _('Event hidden, registration closed, always hidden from calendar'))
 
     status = models.CharField(
         _('Registration status'), max_length=1, choices=RegStatus.choices,
         help_text=_('Set the registration status and visibility status of this event.')
     )
+    calendarEvent = models.BooleanField(_('Visible on public calendars'), default=True)
+
     session = models.ForeignKey(
         EventSession, verbose_name=_('Session'),
         help_text=_('Optional event sessions can be used to order events for registration.'),
@@ -1645,6 +1647,10 @@ class EventOccurrence(models.Model):
         ))
     timeDescription.fget.short_description = _('Occurs')
 
+    def clean(self):
+        if self.endTime < self.startTime:
+            raise ValidationError(_('End time cannot occur before start time.'))
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         self.event.updateTimes()
@@ -1661,6 +1667,13 @@ class EventOccurrence(models.Model):
         verbose_name = _('Event occurrence')
         verbose_name_plural = _('Event occurrences')
         ordering = ('event', 'startTime')
+        constraints = [
+            models.CheckConstraint(
+                check=Q(endTime__gte=F('startTime')),
+                name='%(app_label)s_%(class)s_correct_endTime'
+            ),
+        ]
+
 
 
 class EventRole(models.Model):
