@@ -1443,6 +1443,10 @@ class PartnerRequiredView(RegistrationAdjustmentsMixin, FormView):
             messages.info(request, _('Your registration session has expired. Please try again.'))
             return HttpResponseRedirect(reverse('registration'))
 
+        if self.invoice.status != Invoice.PaymentStatus.preliminary:
+            messages.error(request, _('The current invoice has already been submitted. Please try again.'))
+            return HttpResponseRedirect(reverse('registration'))
+
         self.registration = Registration.objects.filter(
             invoice=self.invoice
         ).prefetch_related(
@@ -1582,6 +1586,10 @@ class MultiRegCustomerNameView(RegistrationAdjustmentsMixin, FormView):
         )
         if not expiry or expiry < timezone.now():
             messages.info(request, _('Your registration session has expired. Please try again.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        if self.invoice.status != Invoice.PaymentStatus.preliminary:
+            messages.error(request, _('The current invoice has already been submitted. Please try again.'))
             return HttpResponseRedirect(reverse('registration'))
 
         self.registration = Registration.objects.filter(
@@ -1737,6 +1745,10 @@ class StudentInfoView(RegistrationAdjustmentsMixin, FormView):
         )
         if not expiry or expiry < timezone.now():
             messages.info(request, _('Your registration session has expired. Please try again.'))
+            return HttpResponseRedirect(reverse('registration'))
+
+        if self.invoice.status != Invoice.PaymentStatus.preliminary:
+            messages.error(request, _('The current invoice has already been submitted. Please try again.'))
             return HttpResponseRedirect(reverse('registration'))
 
         self.registration = Registration.objects.filter(
