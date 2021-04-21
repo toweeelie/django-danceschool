@@ -13,8 +13,11 @@ def get_method_list():
     Include manual methods by default
     '''
     methods = [str(_('Cash')), str(_('Check')), str(_('Bank/Debit Card')), str(_('Other'))]
-    methods += ExpenseItem.objects.order_by().values_list('paymentMethod', flat=True).distinct()
-    methods += RevenueItem.objects.order_by().values_list('paymentMethod', flat=True).distinct()
+    try:
+        methods += ExpenseItem.objects.order_by().values_list('paymentMethod', flat=True).distinct()
+        methods += RevenueItem.objects.order_by().values_list('paymentMethod', flat=True).distinct()
+    except:
+        pass
     methods_list = list(set(methods))
 
     if None in methods_list:
@@ -28,7 +31,10 @@ def get_approval_status_list():
     Include 'Approved' as an option by default.
     '''
     statuses = [str(_('Approved')), ]
-    statuses += ExpenseItem.objects.order_by().values_list('approved', flat=True).distinct()
+    try:
+        statuses += ExpenseItem.objects.order_by().values_list('approved', flat=True).distinct()
+    except:
+        pass
     status_list = list(set(statuses))
 
     if None in status_list:
