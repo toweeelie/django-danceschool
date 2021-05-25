@@ -31,10 +31,10 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
 
         listing = StaffMember.objects.all().translated('en').distinct()
 
-        if instance.statusChoices:
-            listing = listing.filter(instructor__status__in=instance.statusChoices)
-        else:
-            listing = listing.exclude(instructor__status__in=[
+        #if instance.statusChoices:
+        #    listing = listing.filter(instructor__status__in=instance.statusChoices)
+        #else:
+        listing = listing.exclude(instructor__status__in=[
                 Instructor.InstructorStatus.hidden,
                 Instructor.InstructorStatus.retired,
                 Instructor.InstructorStatus.retiredGuest
