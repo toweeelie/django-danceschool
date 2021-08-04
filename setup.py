@@ -67,6 +67,7 @@ setup(
         'google-api-python-client>=1.7.8',
         'google-auth-httplib2>=0.0.3',
         'google-auth-oauthlib>=0.3.0',
+        'django-treebeard<4.5',
     ],
     classifiers=[
         'Environment :: Web Environment',
