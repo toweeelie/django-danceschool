@@ -34,11 +34,11 @@ class StaffMemberListPlugin(PluginTemplateMixin, CMSPluginBase):
         if instance.statusChoices:
             listing = listing.filter(instructor__status__in=list(instance.statusChoices))
         else:
-        listing = listing.exclude(instructor__status__in=[
-                Instructor.InstructorStatus.hidden,
-                Instructor.InstructorStatus.retired,
-                Instructor.InstructorStatus.retiredGuest
-            ])
+            listing = listing.exclude(instructor__status__in=[
+                    Instructor.InstructorStatus.hidden,
+                    Instructor.InstructorStatus.retired,
+                    Instructor.InstructorStatus.retiredGuest
+                ])
 
         if instance.photoRequired:
             listing = listing.filter(image__isnull=False)
