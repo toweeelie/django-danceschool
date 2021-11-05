@@ -2553,8 +2553,6 @@ class Invoice(EmailRecipientMixin, models.Model):
         '''
         email_set = set([
             self.email,
-            getattr(getattr(getattr(self, 'registration', None), 'customer', None), 'email', None),
-            getattr(getattr(self, 'registration', None), 'email', None),
         ])
         email_set.difference_update([None, ''])
         return list(email_set)
@@ -3127,6 +3125,7 @@ class InvoiceItem(models.Model):
         ''' Provides additional context for invoice items. '''
         kwargs.update({
             'id': self.id,
+            'name': self.name,
             'description': self.description,
             'grossTotal': self.grossTotal,
             'total': self.total,
@@ -3383,7 +3382,12 @@ class Registration(EmailRecipientMixin, models.Model):
 
     def get_default_recipients(self):
         ''' Overrides EmailRecipientMixin '''
-        return [self.email, ]
+        return [
+            x.customer.email for x in self.eventregistration_set.filter(
+                cancelled=False,
+                customer__isnull=False,
+            )
+        ]
 
     def get_email_context(self, **kwargs):
         ''' Overrides EmailRecipientMixin '''
@@ -3701,7 +3705,7 @@ class EventRegistration(EmailRecipientMixin, models.Model):
 
     def get_default_recipients(self):
         ''' Overrides EmailRecipientMixin '''
-        this_email = self.email
+        this_email = getattr(self.customer, 'email', None)
         return [this_email, ] if this_email else []
 
     def get_email_context(self, **kwargs):
