@@ -1461,7 +1461,7 @@ class SubstituteReportingForm(forms.ModelForm):
 
     class Media:
         js = (
-            'jquery/jquery.min.js',
+            'admin/js/vendor/jquery/jquery.min.js',
             'js/substituteteacher_ajax.js',
         )
 
