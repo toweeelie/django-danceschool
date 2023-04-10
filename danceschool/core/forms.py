@@ -1503,6 +1503,7 @@ class StaffMemberBioChangeForm(forms.ModelForm):
 
 class RepeatEventForm(forms.Form):
 
+    tillMonthEnd = forms.BooleanField(label=_('"till Month end" option'), required=False, initial=True)
     startDate = forms.DateField(label=_('First event occurs on'))
     repeatEvery = forms.IntegerField(label=_('Repeat every'), min_value=1, initial=1)
     periodicity = forms.ChoiceField(
@@ -1519,16 +1520,17 @@ class RepeatEventForm(forms.Form):
         startDate = self.cleaned_data.get('startDate')
         endDate = self.cleaned_data.get('endDate')
         quantity = self.cleaned_data.get('quantity')
+        tillMonthEnd = self.cleaned_data.get('tillMonthEnd')
+        if not tillMonthEnd:
+            if endDate and not endDate >= startDate:
+                self.add_error('endDate', ValidationError(_('End date must be after start date.')))
 
-        if endDate and not endDate >= startDate:
-            self.add_error('endDate', ValidationError(_('End date must be after start date.')))
-
-        if quantity and endDate:
-            self.add_error(
-                'quantity', ValidationError(_(
-                    'Please specify either a number of repeats or an end date, not both.'
-                ))
-            )
+            if quantity and endDate:
+                self.add_error(
+                    'quantity', ValidationError(_(
+                        'Please specify either a number of repeats or an end date, not both.'
+                    ))
+                )
 
 
 class InvoiceNotificationForm(forms.Form):

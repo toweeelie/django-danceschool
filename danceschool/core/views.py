@@ -1274,58 +1274,28 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
         })
 
         return context
+    
+    def get_success_url(self):
+        return reverse('admin:core_series_changelist')
 
     def form_valid(self, form):
         ''' For each object in the queryset, create the duplicated objects '''
 
+        tillMonthEnd = form.cleaned_data.get('tillMonthEnd')
         startDate = form.cleaned_data.get('startDate')
-        repeatEvery = form.cleaned_data.get('repeatEvery')
-        periodicity = form.cleaned_data.get('periodicity')
-        quantity = form.cleaned_data.get('quantity')
-        endDate = form.cleaned_data.get('endDate')
+        if tillMonthEnd:
+            for event in self.queryset:
+                old_min_time = event.localStartTime.replace(hour=0, minute=0, second=0, microsecond=0)
+                old_occurence_pattern = set([ 
+                    (
+                        x.startTime - x.localStartTime.replace(hour=0, minute=0, second=0, microsecond=0), 
+                        x.endTime - x.localStartTime.replace(hour=0, minute=0, second=0, microsecond=0), 
+                        x.startTime.weekday()
+                    )
+                    for x in event.eventoccurrence_set.all()
+                ])
 
-        # Create a list of start dates, based on the passed  values of repeatEvery,
-        # periodicity, quantity and endDate.  This list will be iterated through to
-        # create the new instances for each event.
-        if periodicity == 'D':
-            delta = {'days': repeatEvery}
-        elif periodicity == 'W':
-            delta = {'weeks': repeatEvery}
-        elif periodicity == 'M':
-            delta = {'months': repeatEvery}
-
-        repeat_list = []
-        this_date = startDate
-
-        if quantity:
-            for k in range(0, quantity):
-                repeat_list.append(this_date)
-                this_date = this_date + relativedelta(**delta)
-        elif endDate:
-            while (this_date <= endDate):
-                repeat_list.append(this_date)
-                this_date = this_date + relativedelta(**delta)
-
-        # Now, loop through the events in the queryset to create duplicates of them
-        for event in self.queryset:
-
-            # For each new occurrence, we determine the new startime by the distance from
-            # midnight of the first occurrence date, where the first occurrence date is
-            # replaced by the date given in repeat list
-            old_min_time = event.localStartTime.replace(hour=0, minute=0, second=0, microsecond=0)
-
-            old_occurrence_data = [
-                (x.startTime - old_min_time, x.endTime - old_min_time, x.cancelled)
-                for x in event.eventoccurrence_set.all()
-            ]
-
-            old_role_data = [(x.role, x.capacity) for x in event.eventrole_set.all()]
-
-            for instance_date in repeat_list:
-
-                # Ensure that time zones are treated properly
-                combined_datetime = datetime.combine(instance_date, datetime.min.time())
-                new_datetime = ensure_timezone(combined_datetime, old_min_time.tzinfo)
+                old_role_data = [(x.role, x.capacity) for x in event.eventrole_set.all()]
 
                 # Removing the pk and ID allow new instances of the event to
                 # be created upon saving with automatically generated ids.
@@ -1334,13 +1304,25 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
                 event.save()
 
                 # Create new occurrences
-                for occurrence in old_occurrence_data:
-                    EventOccurrence.objects.create(
-                        event=event,
-                        startTime=new_datetime + occurrence[0],
-                        endTime=new_datetime + occurrence[1],
-                        cancelled=occurrence[2],
-                    )
+                for occurrence in old_occurence_pattern:
+                    new_min_date = startDate #old_min_time.replace(day = 1, month = old_min_time.month + 1)
+                    delta = (occurrence[2] - new_min_date.weekday()) % 7
+                    new_min_date += timedelta(days=delta)
+
+                    # Ensure that time zones are treated properly
+                    combined_datetime = datetime.combine(new_min_date, datetime.min.time())
+                    new_datetime = ensure_timezone(combined_datetime, old_min_time.tzinfo)
+
+                    for w in range(5):
+                        EventOccurrence.objects.create(
+                            event=event,
+                            startTime=new_datetime + occurrence[0],
+                            endTime=new_datetime + occurrence[1],
+                            cancelled=False,
+                        )
+                        new_datetime += timedelta(days=7)
+                        if new_datetime.month != old_min_time.month + 1:
+                            break
 
                 # Create new event-specific role data
                 for role in old_role_data:
@@ -1354,7 +1336,83 @@ class RepeatEventsView(SuccessMessageMixin, AdminSuccessURLMixin, PermissionRequ
                 # updated properly.
                 event.save()
 
-            return super().form_valid(form)
+        else:
+            repeatEvery = form.cleaned_data.get('repeatEvery')
+            periodicity = form.cleaned_data.get('periodicity')
+            quantity = form.cleaned_data.get('quantity')
+            endDate = form.cleaned_data.get('endDate')
+
+            # Create a list of start dates, based on the passed  values of repeatEvery,
+            # periodicity, quantity and endDate.  This list will be iterated through to
+            # create the new instances for each event.
+            if periodicity == 'D':
+                delta = {'days': repeatEvery}
+            elif periodicity == 'W':
+                delta = {'weeks': repeatEvery}
+            elif periodicity == 'M':
+                delta = {'months': repeatEvery}
+
+            repeat_list = []
+            this_date = startDate
+
+            if quantity:
+                for k in range(0, quantity):
+                    repeat_list.append(this_date)
+                    this_date = this_date + relativedelta(**delta)
+            elif endDate:
+                while (this_date <= endDate):
+                    repeat_list.append(this_date)
+                    this_date = this_date + relativedelta(**delta)
+
+            # Now, loop through the events in the queryset to create duplicates of them
+            for event in self.queryset:
+
+                # For each new occurrence, we determine the new startime by the distance from
+                # midnight of the first occurrence date, where the first occurrence date is
+                # replaced by the date given in repeat list
+                old_min_time = event.localStartTime.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                old_occurrence_data = [
+                    (x.startTime - old_min_time, x.endTime - old_min_time, x.cancelled)
+                    for x in event.eventoccurrence_set.all()
+                ]
+
+                old_role_data = [(x.role, x.capacity) for x in event.eventrole_set.all()]
+
+                for instance_date in repeat_list:
+
+                    # Ensure that time zones are treated properly
+                    combined_datetime = datetime.combine(instance_date, datetime.min.time())
+                    new_datetime = ensure_timezone(combined_datetime, old_min_time.tzinfo)
+
+                    # Removing the pk and ID allow new instances of the event to
+                    # be created upon saving with automatically generated ids.
+                    event.id = None
+                    event.pk = None
+                    event.save()
+
+                    # Create new occurrences
+                    for occurrence in old_occurrence_data:
+                        EventOccurrence.objects.create(
+                            event=event,
+                            startTime=new_datetime + occurrence[0],
+                            endTime=new_datetime + occurrence[1],
+                            cancelled=occurrence[2],
+                        )
+
+                    # Create new event-specific role data
+                    for role in old_role_data:
+                        EventRole.objects.create(
+                            event=event,
+                            role=role[0],
+                            capacity=role[1],
+                        )
+
+                    # Need to save twice to ensure that startTime etc. get
+                    # updated properly.
+                    event.save()
+
+        return super().form_valid(form)
 
 
 ############################################################
