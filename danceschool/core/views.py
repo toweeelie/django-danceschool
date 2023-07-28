@@ -30,11 +30,11 @@ import re
 import logging
 import json
 
-from testapp.forms import QuickCustomerRegForm
+from testapp.forms import QuickCustomerRegForm, ProfileChooseDateForm
 
 from .models import (
     ClassDescription, Event, Series, PublicEvent, EventOccurrence, EventRole, EventRegistration,
-    StaffMember, Instructor, Invoice, Customer, EventCheckIn
+    StaffMember, Instructor, Invoice, Customer, EventCheckIn, PaymentRecord
 )
 from .forms import (
     SubstituteReportingForm, StaffMemberBioChangeForm, RefundForm, EmailContactForm,
@@ -922,11 +922,12 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-class AccountProfileView(LoginRequiredMixin, DetailView):
+class AccountProfileView(LoginRequiredMixin, FormView):
     model = User
     template_name = 'core/account_profile.html'
+    form_class = ProfileChooseDateForm
 
-    def get_subscription(self, s_id, c_id):
+    def get_google_subscription(self, s_id, c_id):
         # If modifying these scopes, delete the file token.pickle.
         SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
         
@@ -973,12 +974,65 @@ class AccountProfileView(LoginRequiredMixin, DetailView):
                 
         return client_info
     
+    def get_site_subscription(self, customer, startDate,endDate) :
+        client_info = []
+        client_info.append(customer.fullName)
+        #client_info.append('%s %s %s -  %s %s %s' % 
+        #        (startDate.day, _(startDate.strftime('%B')),startDate.year,
+        #         endDate.day, _(endDate.strftime('%B')),endDate.year,)
+        #    )
+
+        customer_eventregs = EventRegistration.objects.filter(customer=customer)
+
+        event_name = ''
+        for eventreg in sorted(customer_eventregs,key=lambda x: (x.event.name, x.event.startTime)):
+            if event_name != eventreg.event.name:
+                event_name = eventreg.event.name
+                client_info.append('%s' % (event_name))
+
+            client_info.append('%s:' % _('Payments'))
+            payments = PaymentRecord.objects.filter(invoice = eventreg.invoiceItem.invoice)
+            for payment in payments:
+                payment_date = payment.creationDate
+                if payment_date >= startDate and payment_date <= endDate:
+                    client_info.append('%s: %s' % (payment_date.date(), payment.amount))
+
+            client_info.append('%s:' % _('CheckIns'))
+            eventoccs = EventOccurrence.objects.filter(event=eventreg.event)
+            checkins = [checkin.occurrence for checkin in EventCheckIn.objects.filter(eventRegistration=eventreg,checkInType='O')]
+            for occurrence in eventoccs:
+                occ_date = occurrence.localStartTime
+                checkin = 'X' if occurrence in checkins else ''
+                if occ_date >= startDate and occ_date <= endDate:
+                    client_info.append('%s: %s' % (occ_date.date(),checkin))
+
+        return client_info
+
     def get_object(self, queryset=None):
         return self.request.user
+
+    def get_success_url(self):
+        return self.request.path
+    
+    def form_valid(self, form):
+        startDate = form.cleaned_data.get('startDate')
+        endDate = form.cleaned_data.get('endDate')
+        self.request.session['startDate'] = datetime.combine(startDate, datetime.min.time())
+        self.request.session['endDate']= datetime.combine(endDate, datetime.max.time())
+        return super().form_valid(form)
+
+    def get_form_kwargs(self, **kwargs):
+        kwargs = super().get_form_kwargs(**kwargs)
+        kwargs['startDate'] = self.request.session.get('startDate',datetime.now().replace(day=1))
+        kwargs['endDate'] = self.request.session.get('endDate',datetime.now())
+        return kwargs
 
     def get_context_data(self, **kwargs):
         context = {}
         user = self.get_object()
+
+        startDate = timezone.make_aware(self.request.session.get('startDate',datetime.now().replace(day=1)))
+        endDate = timezone.make_aware(self.request.session.get('endDate',datetime.now()))
 
         context.update({
             'primary_email': user.emailaddress_set.filter(primary=True).first(),
@@ -994,7 +1048,8 @@ class AccountProfileView(LoginRequiredMixin, DetailView):
             context['customer_eventregs'] = EventRegistration.objects.filter(customer=user.customer)
             if user.customer.customer_id > 1:
                 context.update({
-                    'subscription': self.get_subscription(user.customer.sheet_id,user.customer.customer_id),
+                    #'subscription': self.get_google_subscription(user.customer.sheet_id,user.customer.customer_id),
+                    'subscription': self.get_site_subscription(user.customer,startDate,endDate),
                 })
 
         context['verified_eventregs'] = EventRegistration.objects.filter(
