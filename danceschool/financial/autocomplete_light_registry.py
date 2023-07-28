@@ -1,10 +1,12 @@
 from django.utils.translation import gettext_lazy as _
 from django.contrib.auth.models import User
 from django.db.models import Q
+from django.db import connection
 
 from dal import autocomplete
 
 from danceschool.core.models import StaffMember, Location
+from danceschool.core.utils.sys import isPreliminaryRun
 from .models import ExpenseItem, RevenueItem, TransactionParty
 
 
@@ -13,11 +15,13 @@ def get_method_list():
     Include manual methods by default
     '''
     methods = [str(_('Cash')), str(_('Check')), str(_('Bank/Debit Card')), str(_('Other'))]
-    try:
+    if (
+        'financial_expenseitem' in connection.introspection.table_names() and
+        'financial_revenueitem' in connection.introspection.table_names() and not
+        isPreliminaryRun
+    ):
         methods += ExpenseItem.objects.order_by().values_list('paymentMethod', flat=True).distinct()
         methods += RevenueItem.objects.order_by().values_list('paymentMethod', flat=True).distinct()
-    except:
-        pass
     methods_list = list(set(methods))
 
     if None in methods_list:
@@ -31,10 +35,8 @@ def get_approval_status_list():
     Include 'Approved' as an option by default.
     '''
     statuses = [str(_('Approved')), ]
-    try:
+    if 'financial_expenseitem' in connection.introspection.table_names() and not isPreliminaryRun:
         statuses += ExpenseItem.objects.order_by().values_list('approved', flat=True).distinct()
-    except:
-        pass
     status_list = list(set(statuses))
 
     if None in status_list:
