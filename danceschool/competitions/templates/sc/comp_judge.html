@@ -12,6 +12,7 @@
             {{ field }}
         {% endif %}    
     {% endfor %}  
+    {{ form.non_field_errors }} 
     {% if error_message %}
     <p class="error">{{ error_message }}</p>
     {% else %}
