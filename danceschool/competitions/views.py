@@ -583,7 +583,7 @@ def registration_checkin(request, reg_id):
     reg.comp_checked_in = True
     reg.save()
 
-    width_mm = 100
+    width_mm = 150
     height_mm = 100
 
     return generate_comp_image(request, reg.comp_num, reg.competitor.fullName, width_mm, height_mm)
