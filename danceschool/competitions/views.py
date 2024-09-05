@@ -1,6 +1,6 @@
 from django.views.generic import FormView,ListView
 from django.urls import reverse
-from django.http import HttpResponseRedirect,HttpResponse
+from django.http import HttpResponseRedirect,HttpResponse,Http404
 from django.utils.translation import ugettext_lazy as _
 from django.db import IntegrityError
 from danceschool.core.models import Customer
@@ -13,6 +13,8 @@ from .models import Competition,Judge,Registration,PrelimsResult,FinalsResult,Da
 from .forms import CompetitionRegForm,PrelimsResultsForm,FinalsResultsForm
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
+
+from PIL import Image, ImageDraw, ImageFont
 
 import logging
 
@@ -235,7 +237,11 @@ def register_competitor(request, comp_id):
                 competitor.save()
             
                 prelims_reg_obj.save()
-                return render(request, 'sc/comp_success.html', {'comp_num':comp_num})
+
+                path = reverse('registration_checkin', args=[prelims_reg_obj.id])
+                full_url = request.build_absolute_uri(path)
+
+                return render(request, 'sc/comp_success.html', {'comp_num':comp_num,'checkin_url':full_url})
             except IntegrityError:
                 # Handle the unique constraint violation
                 error_message = _("This competitor is already registered to competition.")
@@ -251,7 +257,7 @@ def submit_results(request, comp_id):
     comp = Competition.objects.get(id=comp_id)
     judge = Judge.objects.filter(comp=comp,profile=request.user).first()
 
-    if not judge or (comp.stage in ['r','p'] and not judge.prelims) or (comp.stage in ['d','f'] and not judge.finals):
+    if not judge or (comp.stage in ['r','p'] and not judge.prelims_roles) or (comp.stage in ['d','f'] and not judge.finals):
         error_message = _("Current user is not a judge for this competition stage.")
         return render(request, 'sc/comp_judge.html', {'comp': comp, 'error_message':error_message})
 
@@ -262,36 +268,40 @@ def submit_results(request, comp_id):
     if comp.stage == 'd':
         return redirect('prelims_results', comp_id=comp_id)
     
+    registration_dict = {}    
     if comp.stage == 'p':
-        registrations = Registration.objects.filter(comp=comp,comp_role=judge.prelims_role,comp_checked_in=True).order_by('comp_num') 
+        for prelims_role in judge.prelims_roles.all():
+            registration_dict[prelims_role.pluralName] = Registration.objects.filter(comp=comp,comp_role=prelims_role,comp_checked_in=True).order_by('comp_num') 
+
         redirect_view = 'prelims_results' 
         if PrelimsResult.objects.filter(judge__profile=request.user,judge__comp=comp).exists():
             return redirect(redirect_view, comp_id=comp_id)
     else:
-        registrations = Registration.objects.filter(comp=comp,final_partner__isnull=False).order_by('final_heat_order')
+        registration_dict['pairs'] = Registration.objects.filter(comp=comp,final_partner__isnull=False).order_by('final_heat_order')
         redirect_view = 'finals_results'
         if FinalsResult.objects.filter(judge__profile=request.user,judge__comp=comp).exists():
             return redirect(redirect_view, comp_id=comp_id)
 
     if request.method == 'POST':
         if comp.stage == 'p':
-            form = PrelimsResultsForm(request.POST,initial={'comp': comp,'registrations':registrations})
+            form = PrelimsResultsForm(request.POST,initial={'comp': comp,'registrations':registration_dict})
         else:
-            form = FinalsResultsForm(request.POST,initial={'comp': comp,'registrations':registrations})
+            form = FinalsResultsForm(request.POST,initial={'comp': comp,'registrations':registration_dict['pairs']})
         if form.is_valid():
             try:
-                for reg in registrations:
-                    comp_res = form.cleaned_data[f'competitor_{reg.comp_num}']
-                    comp_comment = form.cleaned_data[f'comment_{reg.comp_num}']
-                    if comp.stage == 'p':
-                        
-                        res_obj = PrelimsResult.objects.create(judge = judge, comp_reg=reg, 
-                                                               result = comp_res, comment = comp_comment)
-                    else:
-                        
-                        res_obj = FinalsResult.objects.create(judge = judge, comp_reg=reg, 
-                                                              result = comp_res, comment = comp_comment)
-                    res_obj.save()
+                for registrations in registration_dict.values():
+                    for reg in registrations:
+                        comp_res = form.cleaned_data[f'competitor_{reg.comp_num}']
+                        comp_comment = form.cleaned_data[f'comment_{reg.comp_num}']
+                        if comp.stage == 'p':
+                            
+                            res_obj = PrelimsResult.objects.create(judge = judge, comp_reg=reg, 
+                                                                result = comp_res, comment = comp_comment)
+                        else:
+                            
+                            res_obj = FinalsResult.objects.create(judge = judge, comp_reg=reg, 
+                                                                result = comp_res, comment = comp_comment)
+                        res_obj.save()
                 return redirect(redirect_view, comp_id=comp_id)
             except IntegrityError:
                 # Handle the unique constraint violation
@@ -299,9 +309,9 @@ def submit_results(request, comp_id):
                 return render(request, 'sc/comp_judge.html', {'form': form, 'comp': comp, 'error_message':error_message})
     else:
         if comp.stage == 'p':
-            form = PrelimsResultsForm(initial={'comp': comp,'registrations':registrations})  
+            form = PrelimsResultsForm(initial={'comp': comp,'registrations':registration_dict})  
         else:
-            form = FinalsResultsForm(initial={'comp': comp,'registrations':registrations})
+            form = FinalsResultsForm(initial={'comp': comp,'registrations':registration_dict['pairs']})
 
     return render(request, 'sc/comp_judge.html', {'form': form, 'comp': comp})
 
@@ -313,7 +323,7 @@ def prelims_results(request, comp_id):
     main_judge_idx = {}
     all_results_ready = True
     for comp_role in comp.comp_roles.all():
-        judge_objs = Judge.objects.filter(comp=comp,prelims=True,prelims_role=comp_role).order_by('profile').all()
+        judge_objs = Judge.objects.filter(comp=comp,prelims_roles=comp_role).order_by('profile').all()
         role_judges = [j.profile for j in judge_objs]
         judges[comp_role] = role_judges
         main_judge_idx[comp_role] = [i for i,j in enumerate(judge_objs) if j.prelims_main_judge][0]
@@ -462,6 +472,7 @@ def prelims_results(request, comp_id):
 
     return render(request, 'sc/comp_results.html', context)
 
+
 def finals_results(request, comp_id):
     comp = get_object_or_404(Competition, pk=comp_id)
     judges = Judge.objects.filter(comp=comp,finals=True).order_by('profile').all()
@@ -509,3 +520,70 @@ def finals_results(request, comp_id):
 
     return render(request, 'sc/comp_results.html', context)
     
+
+def generate_comp_image(request, comp_num, full_name, width_mm, height_mm):
+    # Convert dimensions from millimeters to pixels 
+    pixels_per_mm = 5
+    img_width = int(width_mm * pixels_per_mm)
+    img_height = int(height_mm * pixels_per_mm)
+    
+    # Create an image with a white background
+    image = Image.new('RGB', (img_width, img_height), color='white')
+    
+    # Initialize drawing context
+    draw = ImageDraw.Draw(image)
+
+    # Load a font (you can customize the font path and size)
+    try:
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        large_font = ImageFont.truetype(font_path, 0.900*img_height)
+        small_font = ImageFont.truetype(font_path, 0.040*img_height)
+    except IOError:
+        large_font = ImageFont.load_default()
+        small_font = ImageFont.load_default()
+
+    # Calculate positions for text
+    comp_num_bbox = draw.textbbox((0, 0), comp_num, font=large_font)
+    text_width, text_height = comp_num_bbox[2] - comp_num_bbox[0], comp_num_bbox[3] - comp_num_bbox[0]
+    comp_num_position = ((img_width - text_width) // 2, (img_height - text_height) // 2)
+    
+    full_name_bbox = draw.textbbox((0, 0), full_name, font=small_font)
+    name_width, name_height = full_name_bbox[2] - full_name_bbox[0], full_name_bbox[3] - full_name_bbox[0]
+    full_name_position = ((img_width - name_width) // 2, 20)
+
+    # Draw the comp_num in the center
+    draw.text(comp_num_position, comp_num, font=large_font, fill="black")
+    
+    # Draw the full_name at the top
+    draw.text(full_name_position, full_name, font=small_font, fill="black")
+
+    # Save the image to a BytesIO object
+    from io import BytesIO
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    # Return the image as an HTTP response
+    return HttpResponse(buffer, content_type='image/png')
+
+
+@login_required
+def registration_checkin(request, reg_id):
+    try:
+        reg = Registration.objects.get(id=reg_id)
+    except Registration.DoesNotExist:
+        raise Http404(_("Registration not found."))
+
+    if request.user not in reg.comp.staff.all():
+        return HttpResponse(_("You're not authorized to manage this competition."), status=403)
+    
+    if reg.comp_checked_in:
+        return HttpResponse(_("This competitor already checked-in."), status=400)
+    
+    reg.comp_checked_in = True
+    reg.save()
+
+    width_mm = 100
+    height_mm = 100
+
+    return generate_comp_image(request, reg.comp_num, reg.competitor.fullName, width_mm, height_mm)
