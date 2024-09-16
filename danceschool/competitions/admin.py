@@ -1,17 +1,17 @@
-from django.utils.translation import ugettext_lazy as _
-from django.contrib import admin
 from django import forms
-from django.urls import reverse
-from django.http import HttpRequest,HttpResponseRedirect
+from django.contrib import admin
+from django.db import transaction
+from django.http import HttpRequest
+from django.utils.translation import ugettext_lazy as _
 from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth.models import AnonymousUser
-from django.contrib.admin.widgets import RelatedFieldWidgetWrapper
+
 import unicodecsv as csv
+from dal import autocomplete
+
 from .models import Competition,Judge,Registration,PrelimsResult,FinalsResult
 from .views import register_competitor
-from django.db import transaction
 
-from dal import autocomplete
 
 class RegistrationInlineForm(forms.ModelForm):
     class Meta:
@@ -27,6 +27,7 @@ class RegistrationInlineForm(forms.ModelForm):
                 },
             )
         }
+
 
 class RegistrationInline(admin.TabularInline):
     model = Registration
@@ -123,6 +124,7 @@ class JudgeInlineForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['profile'].label_from_instance = lambda obj: "%s" % obj.get_full_name()
 
+
 class JudgeInlineFormset(forms.models.BaseInlineFormSet):
     def clean(self):
         super().clean()
@@ -204,7 +206,8 @@ class CompetitionAdminForm(forms.ModelForm):
                 with transaction.atomic():
                     register_competitor(request,self.instance.id)
         return instance
-    
+
+
 @admin.register(Competition)
 class CompetitionAdmin(admin.ModelAdmin):
     form = CompetitionAdminForm
@@ -274,6 +277,7 @@ class PrelimsResultAdmin(admin.ModelAdmin):
         # Allow editing if the user is the owner or a helper
         return request.user in obj.staff.all()
 
+
 @admin.register(FinalsResult)
 class FinalsResultAdmin(admin.ModelAdmin):
     list_display = ('judge', 'comp_reg','result') 
@@ -299,4 +303,3 @@ class FinalsResultAdmin(admin.ModelAdmin):
 
         # Allow editing if the user is the owner or a helper
         return request.user in obj.staff.all()
-    
