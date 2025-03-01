@@ -19,7 +19,7 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from io import BytesIO
-
+from unidecode import unidecode
 import logging
 
 # Define logger for this file
@@ -568,7 +568,7 @@ def generate_comp_pdf(request, comp_num, full_name, comp_name, width_mm, height_
 
     # Return the PDF as a response
     response = HttpResponse(pdf, content_type='application/pdf')
-    response['Content-Disposition'] = 'inline; filename="%03d-%s-%s.pdf"' % (comp_num, full_name, comp_name)
+    response['Content-Disposition'] = 'inline; filename="%03d-%s-%s.pdf"' % (comp_num, unidecode(full_name), unidecode(comp_name))
     return response
 
 
