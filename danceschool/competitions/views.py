@@ -243,9 +243,14 @@ def register_competitor(request, comp_id):
                 prelims_reg_obj.save()
 
                 path = reverse('registration_checkin', args=[prelims_reg_obj.id])
-                full_url = request.build_absolute_uri(path)
-
-                return render(request, 'sc/comp_success.html', {'comp_num':comp_num,'checkin_url':full_url})
+                if request.META.get('SERVER_NAME',None): 
+                    # check if it's real request 
+                    full_url = request.build_absolute_uri(path)
+                    return render(request, 'sc/comp_success.html', {'comp_num':comp_num,'checkin_url':full_url})
+                else:
+                    # or csv import
+                    return 
+            
             except IntegrityError:
                 # Handle the unique constraint violation
                 error_message = _("This competitor is already registered to competition.")
