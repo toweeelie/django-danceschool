@@ -29,8 +29,8 @@ class Competition(models.Model):
     finalists_number = models.IntegerField(
         verbose_name=_('Number of finalists per dance role'),
     )
-    pair_finalists = models.BooleanField(
-        _('Paired Final'), default=True, blank=True
+    self_judging_final = models.BooleanField(
+        _('Self Judging Final'), default=False, blank=True
     )
     results_visible = models.BooleanField(
         _('Publish results'), default=False, blank=False
@@ -143,3 +143,18 @@ class FinalsResult(Result):
 
     class Meta:
         unique_together = ('judge', 'comp_reg')
+
+
+class SelfJudgeResult(models.Model):
+    '''
+    Quick self-judgement result (no user registration)
+    '''
+    competitor = models.ForeignKey(
+        Customer, on_delete=models.CASCADE
+    )
+    comp_reg = models.ForeignKey(Registration, on_delete=models.CASCADE)
+    comment = models.CharField(max_length=100,blank=True)
+    result = models.IntegerField(verbose_name=_('Place'),)
+
+    class Meta:
+        unique_together = ('competitor', 'comp_reg')
